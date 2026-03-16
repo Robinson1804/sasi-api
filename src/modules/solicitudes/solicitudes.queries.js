@@ -386,78 +386,8 @@ async function enviar(id, idUsuario) {
       ]
     )
 
-    // 4. Crear flujo de aprobacion UNIFICADO por solicitud (deduplicado por rol)
-    const { rows: ssRows } = await client.query(
-      `SELECT ss.id AS ss_id, ss.id_servicio
-         FROM solicitud_servicios ss
-        WHERE ss.id_solicitud = $1`,
-      [id]
-    )
-
-    // Recoger todos los pasos de config_flujo de todos los servicios
-    const allPasos = []
-    for (const ss of ssRows) {
-      const { rows: flujoRows } = await client.query(
-        `SELECT id, orden, id_rol, sla_horas
-           FROM config_flujo
-          WHERE id_servicio = $1 AND activo = true
-          ORDER BY orden ASC`,
-        [ss.id_servicio]
-      )
-      allPasos.push(...flujoRows)
-    }
-
-    // Deduplicar por id_rol: mantener el config con mayor SLA
-    const rolMap = new Map()
-    for (const paso of allPasos) {
-      const existing = rolMap.get(paso.id_rol)
-      if (!existing || paso.sla_horas > existing.sla_horas) {
-        rolMap.set(paso.id_rol, paso)
-      }
-    }
-
-    // Ordenar: roles que aparecen en orden 1 en flujos multi-etapa van primero (revisores),
-    // luego los que aparecen en ordenes superiores (ejecutores técnicos)
-    const maxOrdenPorRol = new Map()
-    for (const paso of allPasos) {
-      const current = maxOrdenPorRol.get(paso.id_rol) || 0
-      if (paso.orden > current) maxOrdenPorRol.set(paso.id_rol, paso.orden)
-    }
-    const minOrdenPorRol = new Map()
-    for (const paso of allPasos) {
-      const current = minOrdenPorRol.get(paso.id_rol)
-      if (current === undefined || paso.orden < current) minOrdenPorRol.set(paso.id_rol, paso.orden)
-    }
-
-    const dedupPasos = Array.from(rolMap.values()).sort((a, b) => {
-      const minA = minOrdenPorRol.get(a.id_rol) || 0
-      const minB = minOrdenPorRol.get(b.id_rol) || 0
-      if (minA !== minB) return minA - minB
-      return (a.sla_horas || 0) - (b.sla_horas || 0)
-    })
-
-    // Crear etapas unificadas vinculadas a la solicitud
-    // Primera etapa arranca en 'en_revision', las demás en 'pendiente'
-    let ordenUnificado = 1
-    for (const paso of dedupPasos) {
-      const estadoInicial = ordenUnificado === 1 ? 'en_revision' : 'pendiente'
-      await client.query(
-        `INSERT INTO etapas_aprobacion
-           (id_solicitud, id_config, orden, id_rol, estado, fecha_inicio, sla_horas)
-         VALUES ($1, $2, $3, $4, $5, NOW(), $6)`,
-        [id, paso.id, ordenUnificado, paso.id_rol, estadoInicial, paso.sla_horas]
-      )
-      ordenUnificado++
-    }
-
-    // Marcar todos los solicitud_servicios como en_revision
-    for (const ss of ssRows) {
-      await client.query(
-        `UPDATE solicitud_servicios SET estado = 'en_revision', updated_at = NOW()
-          WHERE id = $1`,
-        [ss.ss_id]
-      )
-    }
+    // 4. Servicios quedan en pendiente — las etapas de aprobación se crean
+    // cuando el usuario sube el documento firmado (confirmarFirmado)
 
     // 5. INSERT historial — ENVIO
     await client.query(
@@ -548,25 +478,85 @@ async function confirmarFirmado(id, idUsuario) {
     if (rows.length === 0) throw new Error('Solicitud no encontrada')
     if (!rows[0].firmado_url) throw new Error('No se ha subido el documento firmado')
 
-    // 2. UPDATE estado a en_proceso si aún está enviada
-    if (rows[0].estado === 'enviada') {
+    // 2. UPDATE estado a en_proceso
+    await client.query(
+      `UPDATE solicitudes SET estado = 'en_proceso', updated_at = NOW() WHERE id = $1`,
+      [id]
+    )
+
+    // 3. Crear flujo de aprobación UNIFICADO (deduplicado por rol)
+    const { rows: ssRows } = await client.query(
+      `SELECT ss.id AS ss_id, ss.id_servicio
+         FROM solicitud_servicios ss
+        WHERE ss.id_solicitud = $1`,
+      [id]
+    )
+
+    const allPasos = []
+    for (const ss of ssRows) {
+      const { rows: flujoRows } = await client.query(
+        `SELECT id, orden, id_rol, sla_horas
+           FROM config_flujo
+          WHERE id_servicio = $1 AND activo = true
+          ORDER BY orden ASC`,
+        [ss.id_servicio]
+      )
+      allPasos.push(...flujoRows)
+    }
+
+    // Deduplicar por id_rol (mayor SLA)
+    const rolMap = new Map()
+    for (const paso of allPasos) {
+      const existing = rolMap.get(paso.id_rol)
+      if (!existing || paso.sla_horas > existing.sla_horas) {
+        rolMap.set(paso.id_rol, paso)
+      }
+    }
+
+    // Ordenar por mínimo orden original
+    const minOrdenPorRol = new Map()
+    for (const paso of allPasos) {
+      const current = minOrdenPorRol.get(paso.id_rol)
+      if (current === undefined || paso.orden < current) minOrdenPorRol.set(paso.id_rol, paso.orden)
+    }
+    const dedupPasos = Array.from(rolMap.values()).sort((a, b) => {
+      const minA = minOrdenPorRol.get(a.id_rol) || 0
+      const minB = minOrdenPorRol.get(b.id_rol) || 0
+      if (minA !== minB) return minA - minB
+      return (a.sla_horas || 0) - (b.sla_horas || 0)
+    })
+
+    // Crear etapas: primera en 'en_revision', resto 'pendiente'
+    let ordenUnificado = 1
+    for (const paso of dedupPasos) {
+      const estadoInicial = ordenUnificado === 1 ? 'en_revision' : 'pendiente'
       await client.query(
-        `UPDATE solicitudes SET estado = 'en_proceso', updated_at = NOW() WHERE id = $1`,
-        [id]
+        `INSERT INTO etapas_aprobacion
+           (id_solicitud, id_config, orden, id_rol, estado, fecha_inicio, sla_horas)
+         VALUES ($1, $2, $3, $4, $5, NOW(), $6)`,
+        [id, paso.id, ordenUnificado, paso.id_rol, estadoInicial, paso.sla_horas]
+      )
+      ordenUnificado++
+    }
+
+    // Marcar servicios como en_revision
+    for (const ss of ssRows) {
+      await client.query(
+        `UPDATE solicitud_servicios SET estado = 'en_revision', updated_at = NOW() WHERE id = $1`,
+        [ss.ss_id]
       )
     }
 
-    // 3. INSERT historial — DOCUMENTO_FIRMADO
+    // 4. INSERT historial — DOCUMENTO_FIRMADO
     await client.query(
       `INSERT INTO historial
          (id_solicitud, tipo_evento, estado_nuevo, id_usuario, comentario)
-       VALUES ($1, 'DOCUMENTO_FIRMADO', $2, $3, $4)`,
-      [id, rows[0].estado === 'enviada' ? 'en_proceso' : rows[0].estado,
-       idUsuario, 'Documento firmado cargado por el solicitante']
+       VALUES ($1, 'DOCUMENTO_FIRMADO', 'en_proceso', $2, 'Documento firmado cargado — solicitud enviada a aprobación')`,
+      [id, idUsuario]
     )
 
     await client.query('COMMIT')
-    return { id, estado: rows[0].estado === 'enviada' ? 'en_proceso' : rows[0].estado }
+    return { id, estado: 'en_proceso' }
   } catch (err) {
     await client.query('ROLLBACK')
     throw err
