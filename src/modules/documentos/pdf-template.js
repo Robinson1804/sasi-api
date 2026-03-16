@@ -79,21 +79,34 @@ function generarHtmlSolicitud(sol) {
     .filter(s => s.codigo)
     .map((s, i) => {
       const datos = s.datos || {};
-      // Filter out boolean flags and per-user fields for masiva
-      const entries = Object.entries(datos).filter(([k, v]) => {
-        if (typeof v === 'boolean' || v === 'true' || v === 'false') return false;
-        if (isMasiva && MASIVA_PER_USER_FIELDS.includes(k)) return false;
-        // Hide empty VPN fields in masiva (usuarioRed, direccionIP)
-        if (isMasiva && (v === '' || v === null || v === undefined) && k !== 'justificacion') return false;
-        return true;
-      });
-      const datosHtml = entries.length > 0
+      // Build formatted entries, skipping empty/null values and per-user fields for masiva
+      const formattedEntries = Object.entries(datos)
+        .filter(([k, v]) => {
+          if (isMasiva && MASIVA_PER_USER_FIELDS.includes(k)) return false;
+          // Hide null, undefined, empty string fields
+          if (v === null || v === undefined || v === '') return false;
+          return true;
+        })
+        .map(([k, v]) => {
+          const formatted = formatValue(k, v);
+          // formatValue returns null for false booleans / empty arrays/objects → skip
+          if (formatted === null || formatted === '—') return null;
+          return [k, formatted];
+        })
+        .filter(Boolean);
+
+      const datosHtml = formattedEntries.length > 0
         ? `<table class="datos-servicio">
-            ${entries.map(([k, v]) => `
+            ${formattedEntries.map(([k, v]) => {
+              // If value starts with __HTML__ marker, render as raw HTML (for lists)
+              const isRawHtml = typeof v === 'string' && v.startsWith('__HTML__');
+              const displayVal = isRawHtml ? v.slice(8) : escapeHtml(v);
+              return `
               <tr>
                 <td class="dato-label">${formatLabel(k)}</td>
-                <td class="dato-value">${escapeHtml(formatValue(k, v))}</td>
-              </tr>`).join('')}
+                <td class="dato-value">${displayVal}</td>
+              </tr>`;
+            }).join('')}
            </table>`
         : '<p class="sin-datos">Sin datos adicionales</p>';
 
@@ -218,6 +231,7 @@ function generarHtmlSolicitud(sol) {
       border: 1px solid #e0e0e0;
       border-radius: 4px;
       overflow: hidden;
+      page-break-inside: avoid;
     }
     .servicio-item:last-child { margin-bottom: 0; }
     .servicio-header {
@@ -465,6 +479,35 @@ function formatValue(key, val) {
   if (val === null || val === undefined || val === '') {
     return DEFAULT_MAP[key] || '—';
   }
+  // Boolean handling
+  if (val === true) return 'Sí';
+  if (val === false) return null; // signal to skip this field
+
+  // Array handling — render as HTML list
+  if (Array.isArray(val)) {
+    if (val.length === 0) return null; // skip empty arrays
+    const items = val.map(item => {
+      if (typeof item === 'object' && item !== null) {
+        // Render object fields as "key: value" pairs
+        const parts = Object.entries(item)
+          .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
+          .map(([k, v]) => `${formatLabel(k)}: ${v === true ? 'Sí' : (VALUE_MAP[String(v)] || String(v))}`);
+        return parts.join(' — ');
+      }
+      return String(item);
+    });
+    return `__HTML__<ul style="margin:2px 0; padding-left:18px; list-style:disc;">${items.map(i => `<li style="font-size:8.5pt; margin-bottom:1px;">${escapeHtml(i)}</li>`).join('')}</ul>`;
+  }
+
+  // Object handling — render key-value pairs
+  if (typeof val === 'object' && val !== null) {
+    const parts = Object.entries(val)
+      .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
+      .map(([k, v]) => `${formatLabel(k)}: ${v === true ? 'Sí' : (VALUE_MAP[String(v)] || String(v))}`);
+    if (parts.length === 0) return null; // skip empty objects
+    return parts.join(' | ');
+  }
+
   const str = String(val);
   if (VALUE_MAP[str]) return VALUE_MAP[str];
   if (key === 'internetPerfil' && VALUE_MAP[str]) return VALUE_MAP[str];

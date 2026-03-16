@@ -91,6 +91,73 @@ async function applyPatches() {
   console.log('✓ Patches aplicados (datos_atencion, flujo unificado)')
 }
 
+async function ensureTechUsers() {
+  const bcrypt = require('bcryptjs')
+  const techUsers = [
+    {
+      dni: '66666666', nombres: 'Luis', apellidos: 'Redes',
+      cargo: 'Especialista en Redes', tipo_vinculo: 'Nombrado',
+      correo: 'lredes@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
+      sede: 'Lima - Sede Central', rolCodigo: 'equipo_redes'
+    },
+    {
+      dni: '55555555', nombres: 'Ana', apellidos: 'DBA',
+      cargo: 'Administradora de Base de Datos', tipo_vinculo: 'Nombrado',
+      correo: 'adba@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
+      sede: 'Lima - Sede Central', rolCodigo: 'dba'
+    },
+    {
+      dni: '44444444', nombres: 'Pedro', apellidos: 'Soporte',
+      cargo: 'Técnico de Soporte', tipo_vinculo: 'Nombrado',
+      correo: 'psoporte@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
+      sede: 'Lima - Sede Central', rolCodigo: 'soporte_tecnico'
+    },
+    {
+      dni: '77777777', nombres: 'Carlos', apellidos: 'Mendoza',
+      cargo: 'Jefe de OTIN', tipo_vinculo: 'Nombrado',
+      correo: 'cmendoza@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
+      sede: 'Lima - Sede Central', rolCodigo: 'jefe_supervisor'
+    }
+  ]
+
+  let created = 0
+  for (const u of techUsers) {
+    const { rows: existing } = await pool.query(
+      'SELECT id FROM personal WHERE dni = $1', [u.dni]
+    )
+    if (existing.length > 0) continue
+
+    // Insert personal
+    const { rows: [per] } = await pool.query(
+      `INSERT INTO personal (dni, nombres, apellidos, cargo, tipo_vinculo, correo, oficina, sede, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ACTIVO') RETURNING id`,
+      [u.dni, u.nombres, u.apellidos, u.cargo, u.tipo_vinculo, u.correo, u.oficina, u.sede]
+    )
+
+    // Insert usuario with bcrypt(dni)
+    const hash = await bcrypt.hash(u.dni, 10)
+    const { rows: [usr] } = await pool.query(
+      `INSERT INTO usuarios (id_personal, password_hash, activo) VALUES ($1, $2, true) RETURNING id`,
+      [per.id, hash]
+    )
+
+    // Get role and assign
+    const { rows: roles } = await pool.query(
+      'SELECT id FROM roles WHERE codigo = $1', [u.rolCodigo]
+    )
+    if (roles.length > 0) {
+      await pool.query(
+        'INSERT INTO usuario_roles (id_usuario, id_rol) VALUES ($1, $2)',
+        [usr.id, roles[0].id]
+      )
+    }
+    created++
+  }
+  if (created > 0) {
+    console.log(`✓ ${created} usuarios técnicos creados (66666666, 55555555, 44444444, 77777777)`)
+  }
+}
+
 async function fixPlaceholderPasswords() {
   const bcrypt = require('bcryptjs')
   const { rows: users } = await pool.query(
@@ -111,6 +178,7 @@ async function start() {
     console.log(`✓ PostgreSQL conectado: ${result.rows[0].now}`)
     await runMigrationIfNeeded()
     await applyPatches()
+    await ensureTechUsers()
     await fixPlaceholderPasswords()
   } catch (err) {
     console.error('✗ Error conectando a PostgreSQL:', err.message)
