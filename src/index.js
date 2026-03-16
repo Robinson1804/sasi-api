@@ -8,6 +8,16 @@ const { pool } = require('./config/db')
 const PORT = process.env.PORT || 3001
 
 async function runMigrationIfNeeded() {
+  // Force reset if env var set
+  if (process.env.FORCE_RESET_DB === 'true') {
+    console.log('⚠ FORCE_RESET_DB=true — Resetting database...')
+    await pool.query('DROP SCHEMA public CASCADE')
+    await pool.query('CREATE SCHEMA public')
+    await pool.query('GRANT ALL ON SCHEMA public TO postgres')
+    await pool.query('GRANT ALL ON SCHEMA public TO public')
+    console.log('✓ Schema dropped and recreated')
+  }
+
   // Check if tables exist
   const { rows } = await pool.query(
     `SELECT COUNT(*) as cnt FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'servicios'`
