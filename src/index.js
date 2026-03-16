@@ -98,27 +98,33 @@ async function ensureTechUsers() {
       dni: '66666666', nombres: 'Luis', apellidos: 'Redes',
       cargo: 'Especialista en Redes', tipo_vinculo: 'Nombrado',
       correo: 'lredes@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
-      sede: 'Lima - Sede Central', rolCodigo: 'equipo_redes'
+      rolCodigo: 'equipo_redes'
     },
     {
       dni: '55555555', nombres: 'Ana', apellidos: 'DBA',
       cargo: 'Administradora de Base de Datos', tipo_vinculo: 'Nombrado',
       correo: 'adba@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
-      sede: 'Lima - Sede Central', rolCodigo: 'dba'
+      rolCodigo: 'dba'
     },
     {
       dni: '44444444', nombres: 'Pedro', apellidos: 'Soporte',
       cargo: 'Técnico de Soporte', tipo_vinculo: 'Nombrado',
       correo: 'psoporte@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
-      sede: 'Lima - Sede Central', rolCodigo: 'soporte_tecnico'
+      rolCodigo: 'soporte_tecnico'
     },
     {
       dni: '77777777', nombres: 'Carlos', apellidos: 'Mendoza',
       cargo: 'Jefe de OTIN', tipo_vinculo: 'Nombrado',
       correo: 'cmendoza@inei.gob.pe', oficina: 'Oficina Técnica de Informática',
-      sede: 'Lima - Sede Central', rolCodigo: 'jefe_supervisor'
+      rolCodigo: 'jefe_supervisor'
     }
   ]
+
+  // Get sede ID for "Lima - Sede Central"
+  const { rows: sedeRows } = await pool.query(
+    `SELECT id FROM sedes WHERE nombre ILIKE '%Lima%Sede Central%' LIMIT 1`
+  )
+  const idSede = sedeRows[0]?.id || null
 
   let created = 0
   for (const u of techUsers) {
@@ -129,9 +135,9 @@ async function ensureTechUsers() {
 
     // Insert personal
     const { rows: [per] } = await pool.query(
-      `INSERT INTO personal (dni, nombres, apellidos, cargo, tipo_vinculo, correo, oficina, sede, estado)
+      `INSERT INTO personal (dni, nombres, apellidos, cargo, tipo_vinculo, correo, oficina, id_sede, estado)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ACTIVO') RETURNING id`,
-      [u.dni, u.nombres, u.apellidos, u.cargo, u.tipo_vinculo, u.correo, u.oficina, u.sede]
+      [u.dni, u.nombres, u.apellidos, u.cargo, u.tipo_vinculo, u.correo, u.oficina, idSede]
     )
 
     // Insert usuario with bcrypt(dni)
