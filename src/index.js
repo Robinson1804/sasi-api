@@ -88,7 +88,32 @@ async function applyPatches() {
     WHERE ea.estado = 'en_revision'
     GROUP BY ea.id, s.id, r.id
   `)
-  console.log('✓ Patches aplicados (datos_atencion, flujo unificado)')
+  // Fix corrupted solicitud numbers and make function more robust
+  await pool.query(`
+    UPDATE solicitudes SET numero = 'SASI-' || EXTRACT(YEAR FROM fecha_creacion)::TEXT || '-' || LPAD(id::TEXT, 6, '0')
+    WHERE numero !~ '^SASI-[0-9]{4}-[0-9]{6}$'
+  `)
+
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION generar_numero_solicitud()
+    RETURNS VARCHAR(20) AS $$
+    DECLARE
+      anio TEXT;
+      seq INT;
+    BEGIN
+      anio := EXTRACT(YEAR FROM NOW())::TEXT;
+      SELECT COALESCE(MAX(
+        CAST(SUBSTRING(numero FROM 11) AS INT)
+      ), 0) + 1
+      INTO seq
+      FROM solicitudes
+      WHERE numero ~ ('^SASI-' || anio || '-[0-9]+$');
+      RETURN 'SASI-' || anio || '-' || LPAD(seq::TEXT, 6, '0');
+    END;
+    $$ LANGUAGE plpgsql;
+  `)
+
+  console.log('✓ Patches aplicados (datos_atencion, flujo unificado, numero solicitud)')
 }
 
 async function ensureTechUsers() {
