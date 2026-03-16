@@ -1,21 +1,19 @@
 // ---------------------------------------------------------------------------
 // externos.service.js — Servicio que simula una API externa
-// Lee datos de personal desde un archivo Excel (LISTA_API_RB.xlsx)
+// Lee datos de personal desde JSON (convertido del Excel LISTA_API_RB.xlsx)
 // En producción sería reemplazado por llamadas HTTP a un servicio real.
 // ---------------------------------------------------------------------------
 const path = require('path')
-const XLSX = require('xlsx')
+const fs = require('fs')
 
-const EXCEL_PATH = path.resolve(__dirname, '../../../../LISTA_API_RB.xlsx')
+const JSON_PATH = path.resolve(__dirname, '../../../data/personal-rrhh.json')
 
 let _cache = null
 
 function cargarDatos() {
   if (_cache) return _cache
 
-  const wb = XLSX.readFile(EXCEL_PATH)
-  const ws = wb.Sheets[wb.SheetNames[0]]
-  const raw = XLSX.utils.sheet_to_json(ws)
+  const raw = JSON.parse(fs.readFileSync(JSON_PATH, 'utf8'))
 
   _cache = raw.map((r) => ({
     dni:          String(r.DNI || '').padStart(8, '0'),
@@ -31,7 +29,7 @@ function cargarDatos() {
     sede:         (r.SEDE || '').trim(),
   }))
 
-  console.log(`[externos] ${_cache.length} registros cargados desde Excel`)
+  console.log(`[externos] ${_cache.length} registros cargados desde JSON`)
   return _cache
 }
 
