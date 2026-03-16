@@ -54,17 +54,20 @@ async function runMigrationIfNeeded() {
   `)
   console.log('✓ Vista v_bandeja_aprobacion creada')
 
-  // Fix placeholder passwords — set password = DNI for each user
+  console.log('✓ Migración completada!')
+}
+
+async function fixPlaceholderPasswords() {
   const bcrypt = require('bcryptjs')
   const { rows: users } = await pool.query(
     `SELECT u.id, p.dni FROM usuarios u JOIN personal p ON p.id = u.id_personal WHERE u.password_hash LIKE '%placeholder%'`
   )
+  if (users.length === 0) return
   for (const u of users) {
     const hash = await bcrypt.hash(u.dni, 10)
     await pool.query('UPDATE usuarios SET password_hash = $1 WHERE id = $2', [hash, u.id])
   }
   console.log(`✓ Passwords actualizados para ${users.length} usuarios (password = DNI)`)
-  console.log('✓ Migración completada!')
 }
 
 async function start() {
@@ -73,6 +76,7 @@ async function start() {
     const result = await pool.query('SELECT NOW() as now')
     console.log(`✓ PostgreSQL conectado: ${result.rows[0].now}`)
     await runMigrationIfNeeded()
+    await fixPlaceholderPasswords()
   } catch (err) {
     console.error('✗ Error conectando a PostgreSQL:', err.message)
     process.exit(1)
