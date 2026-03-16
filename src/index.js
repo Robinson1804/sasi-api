@@ -53,6 +53,17 @@ async function runMigrationIfNeeded() {
     GROUP BY ea.id, s.id, r.id
   `)
   console.log('✓ Vista v_bandeja_aprobacion creada')
+
+  // Fix placeholder passwords — set password = DNI for each user
+  const bcrypt = require('bcryptjs')
+  const { rows: users } = await pool.query(
+    `SELECT u.id, p.dni FROM usuarios u JOIN personal p ON p.id = u.id_personal WHERE u.password_hash LIKE '%placeholder%'`
+  )
+  for (const u of users) {
+    const hash = await bcrypt.hash(u.dni, 10)
+    await pool.query('UPDATE usuarios SET password_hash = $1 WHERE id = $2', [hash, u.id])
+  }
+  console.log(`✓ Passwords actualizados para ${users.length} usuarios (password = DNI)`)
   console.log('✓ Migración completada!')
 }
 
