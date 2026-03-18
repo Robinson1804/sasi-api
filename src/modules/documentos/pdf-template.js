@@ -80,8 +80,9 @@ function generarHtmlSolicitud(sol) {
     .map((s, i) => {
       const datos = s.datos || {};
       // Build formatted entries, skipping empty/null values and per-user fields for masiva
-      const formattedEntries = Object.entries(datos)
+      let formattedEntries = Object.entries(datos)
         .filter(([k, v]) => {
+          if (EXCLUDE_FIELDS.has(k)) return false;
           if (isMasiva && MASIVA_PER_USER_FIELDS.includes(k)) return false;
           // Hide null, undefined, empty string fields
           if (v === null || v === undefined || v === '') return false;
@@ -94,6 +95,19 @@ function generarHtmlSolicitud(sol) {
           return [k, formatted];
         })
         .filter(Boolean);
+
+      // Apply service-specific field order if defined
+      const fieldOrder = SERVICE_FIELD_ORDER[s.codigo];
+      if (fieldOrder) {
+        formattedEntries = formattedEntries.sort(([a], [b]) => {
+          const ai = fieldOrder.indexOf(a);
+          const bi = fieldOrder.indexOf(b);
+          if (ai === -1 && bi === -1) return 0;
+          if (ai === -1) return 1;
+          if (bi === -1) return -1;
+          return ai - bi;
+        });
+      }
 
       const datosHtml = formattedEntries.length > 0
         ? `<table class="datos-servicio">
@@ -416,9 +430,21 @@ function generarHtmlSolicitud(sol) {
 </html>`;
 }
 
+// Fields that should never appear in the PDF (UI state, not business data)
+const EXCLUDE_FIELDS = new Set(['mostrarUsuarios']);
+
+// Display order per service code (unlisted fields appear at end)
+const SERVICE_FIELD_ORDER = {
+  c6: ['tipoSolicitud', 'jefeArea', 'proposito', 'usuarios', 'tipoAcceso', 'servidor', 'carpeta', 'permiso', 'justificacion'],
+  c7: ['tipoSolicitud', 'servidor', 'carpeta', 'nivelPermiso', 'justificacion'],
+  c8: ['servidor', 'nombreBD', 'ambiente', 'tipoAcceso', 'fechaInicio', 'fechaFin', 'permisoLectura', 'permisoEscritura', 'permisoEjecucion', 'permisoDDL', 'objetosEspecificos', 'justificacion'],
+  c9: ['nombreSistema', 'modulo', 'fechaAlta', 'fechaBaja', 'tipoAcceso', 'especificar', 'sustento', 'usuarios'],
+};
+
 /** Known label mappings for service data keys */
 const LABEL_MAP = {
   tipoOperacion: 'Tipo de Operación',
+  tipoSolicitud: 'Tipo de Solicitud',
   correoTipo: 'Tipo de Correo',
   redTipoCuenta: 'Tipo de Cuenta de Red',
   internetPerfil: 'Perfil de Internet',
@@ -435,14 +461,38 @@ const LABEL_MAP = {
   justificacion: 'Justificación',
   periodoDesde: 'Período Desde',
   periodoHasta: 'Período Hasta',
-  fechaInicio: 'Fecha Inicio',
+  fechaInicio: 'Fecha de Inicio',
   fechaTermino: 'Fecha Término',
+  fechaFin: 'Fecha de Fin',
   usuarioRed: 'Usuario Red',
   direccionIP: 'Dirección IP',
   correoPersonal: 'Correo Personal',
   telefonoContacto: 'Teléfono Contacto',
   internetRedesSociales: 'Redes Sociales',
   internetJustificacion: 'Justificación Internet',
+  // C6 - Carpeta FTP
+  jefeArea: 'Jefe de Área',
+  proposito: 'Propósito',
+  usuarios: 'Usuarios',
+  permiso: 'Permiso',
+  carpeta: 'Carpeta',
+  // C7 - Recursos Compartidos
+  nivelPermiso: 'Nivel de Permiso',
+  // C8 - Base de Datos
+  ambiente: 'Ambiente',
+  nombreBD: 'Nombre de Base de Datos',
+  permisoDDL: 'Permiso DDL',
+  permisoLectura: 'Permiso Lectura',
+  permisoEscritura: 'Permiso Escritura',
+  permisoEjecucion: 'Permiso Ejecución',
+  objetosEspecificos: 'Objetos Específicos',
+  // C9 - Sistemas/Aplicativos
+  nombreSistema: 'Nombre del Sistema',
+  modulo: 'Módulo',
+  fechaAlta: 'Fecha de Alta',
+  fechaBaja: 'Fecha de Baja',
+  sustento: 'Sustento de Uso',
+  especificar: 'Especificar',
 };
 
 /** Convert camelCase key to readable label */
@@ -456,6 +506,7 @@ function formatLabel(key) {
 
 /** Format value for display — map coded values to human-readable text */
 const VALUE_MAP = {
+  // C1 tipoOperacion
   creacion: 'Creación',
   modificacion: 'Modificación',
   baja: 'Baja',
@@ -467,6 +518,23 @@ const VALUE_MAP = {
   '3': 'Básico',
   con: 'Con Redes Sociales',
   sin: 'Sin Redes Sociales',
+  // C6 - Carpeta FTP
+  generacion: 'Generación de carpeta FTP',
+  acceso: 'Acceso',
+  quitar: 'Quitar permiso',
+  lectura: 'Lectura',
+  escritura: 'Escritura',
+  control_total: 'Control Total',
+  // C9 - Sistemas/Aplicativos
+  desactivacion: 'Desactivación',
+  actualizacion: 'Actualización',
+  consulta: 'Consulta',
+  otro: 'Otro',
+  // C8 - Base de Datos
+  desarrollo: 'Desarrollo',
+  produccion: 'Producción',
+  permanente: 'Permanente',
+  temporal: 'Temporal',
 };
 
 /** Default values for fields that shouldn't show "—" */
