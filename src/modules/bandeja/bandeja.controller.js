@@ -27,6 +27,8 @@ async function listar(req, res) {
       slaHoras: r.sla_horas,
       vencioSla: r.vencio_sla,
       tipo: r.tipo,
+      etapaNombre: r.rol_nombre,
+      etapaEstado: r.etapa_estado,
     }));
 
     return ok(res, items);
@@ -37,24 +39,40 @@ async function listar(req, res) {
 }
 
 /* ──────────────────────────────────────────────
-   POST /bandeja/:id/decidir — Aprobar/Observar/Rechazar
+   POST /bandeja/:id/decidir — Aprobar/Observar/Rechazar por servicio
+   Body: { servicioDecisiones: [{ codigo, decision, comentario }], usuarioRedAsignado? }
    ────────────────────────────────────────────── */
 async function decidirCtrl(req, res) {
   try {
     const etapaId = Number(req.params.id);
-    const { decision, comentario } = req.body;
+    const { servicioDecisiones, usuarioRedAsignado } = req.body;
 
-    // Validar decisión
-    if (!DECISIONES_VALIDAS.includes(decision)) {
-      return error(res, 400, `Decisión inválida. Valores permitidos: ${DECISIONES_VALIDAS.join(', ')}`);
+    // Validar que el array existe y no está vacío
+    if (!Array.isArray(servicioDecisiones) || servicioDecisiones.length === 0) {
+      return error(res, 400, 'Se requieren las decisiones por servicio (servicioDecisiones)');
     }
 
-    // Validar comentario (obligatorio solo para observar y rechazar)
-    if ((decision === 'observar' || decision === 'rechazar') && (!comentario || !comentario.trim())) {
-      return error(res, 400, 'El comentario es obligatorio para observar o rechazar');
+    // Validar cada entrada
+    for (const sd of servicioDecisiones) {
+      if (!sd.codigo || typeof sd.codigo !== 'string') {
+        return error(res, 400, 'Cada decisión debe incluir el código de servicio');
+      }
+      if (!DECISIONES_VALIDAS.includes(sd.decision)) {
+        return error(res, 400, `Decisión inválida para ${sd.codigo}: "${sd.decision}". Valores permitidos: ${DECISIONES_VALIDAS.join(', ')}`);
+      }
+      if ((sd.decision === 'observar' || sd.decision === 'rechazar') && !sd.comentario?.trim()) {
+        return error(res, 400, `El comentario es obligatorio para observar o rechazar (servicio: ${sd.codigo})`);
+      }
     }
 
-    const resultado = await decidir(etapaId, decision, (comentario || '').trim(), req.user.id);
+    const resultado = await decidir(
+      etapaId,
+      servicioDecisiones,
+      null, // comentario general — se construye automáticamente en queries
+      req.user.id,
+      (usuarioRedAsignado || '').trim() || null,
+      req.user.roles || [],
+    );
 
     return ok(res, resultado);
   } catch (err) {
@@ -78,7 +96,7 @@ async function atenderCtrl(req, res) {
       return error(res, 400, 'Los datos de atención son obligatorios');
     }
 
-    const resultado = await atender(etapaId, datosAtencion, (comentario || '').trim(), req.user.id);
+    const resultado = await atender(etapaId, datosAtencion, (comentario || '').trim(), req.user.id, req.user.roles || []);
 
     return ok(res, resultado);
   } catch (err) {

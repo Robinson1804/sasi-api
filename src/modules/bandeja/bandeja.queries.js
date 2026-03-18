@@ -19,10 +19,11 @@ const SQL_LISTAR_POR_ROL = `
    ────────────────────────────────────────────── */
 const SQL_GET_ETAPA = `
   SELECT ea.id, ea.id_solicitud, ea.orden, ea.id_rol,
-         ea.estado, ea.fecha_inicio
+         ea.estado, ea.fecha_inicio, r.codigo AS rol_codigo
     FROM etapas_aprobacion ea
+    JOIN roles r ON r.id = ea.id_rol
    WHERE ea.id = $1
-     FOR UPDATE
+     FOR UPDATE OF ea
 `;
 
 const SQL_UPDATE_ETAPA = `
@@ -57,13 +58,22 @@ const SQL_UPDATE_ALL_SERVICIOS = `
    WHERE id_solicitud = $2
 `;
 
+const SQL_UPDATE_SERVICIO_ESTADO = `
+  UPDATE solicitud_servicios ss
+     SET estado = $1, updated_at = NOW()
+    FROM servicios sv
+   WHERE ss.id_servicio = sv.id
+     AND ss.id_solicitud = $2
+     AND sv.codigo = $3
+`;
+
 const SQL_UPDATE_SOLICITUD = `
   UPDATE solicitudes SET estado = $1, fecha_cierre = $2 WHERE id = $3
 `;
 
 const SQL_INSERT_HISTORIAL = `
   INSERT INTO historial (id_solicitud, id_solicitud_servicio, tipo_evento, estado_nuevo, comentario, id_usuario)
-  VALUES ($1, $2, $3, $4, $5, $6)
+  VALUES ($1, $2::int, $3, $4, $5, $6)
 `;
 
 /* ──────────────────────────────────────────────
@@ -76,9 +86,17 @@ async function listarPorRol(roles) {
 
 /* ──────────────────────────────────────────────
    decidir — Transacción de aprobación/observación/rechazo
-   Ahora opera a nivel de solicitud (flujo unificado)
+   Acepta decisiones por servicio: [{ codigo, decision, comentario }]
+   La decisión global se deriva: rechazar > observar > aprobar
    ────────────────────────────────────────────── */
-async function decidir(etapaId, decision, comentario, aprobadorId) {
+async function decidir(etapaId, servicioDecisiones, comentarioGeneral, aprobadorId, usuarioRedAsignado = null, rolesUsuario = []) {
+  // Derivar decisión global: rechazar > observar > aprobar
+  let overallDecision = 'aprobar';
+  for (const sd of servicioDecisiones) {
+    if (sd.decision === 'rechazar') { overallDecision = 'rechazar'; break; }
+    if (sd.decision === 'observar') overallDecision = 'observar';
+  }
+
   const client = await getClient();
 
   try {
@@ -95,17 +113,30 @@ async function decidir(etapaId, decision, comentario, aprobadorId) {
       throw { status: 409, message: `La etapa ya fue procesada (estado: ${etapa.estado})` };
     }
 
-    // 3. Determinar nuevo estado
+    // 2b. Validar que el usuario tiene el rol correcto para esta etapa
+    if (rolesUsuario.length > 0 && !rolesUsuario.includes(etapa.rol_codigo)) {
+      throw { status: 403, message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})` };
+    }
+
+    // 3. Determinar nuevo estado global
     const ESTADO_MAP = {
       aprobar: 'aprobado',
       observar: 'observado',
       rechazar: 'rechazado',
     };
-    const nuevoEstado = ESTADO_MAP[decision];
+    const nuevoEstado = ESTADO_MAP[overallDecision];
 
-    // Actualizar etapa
+    // Armar comentario consolidado (nunca null — algunas columnas tienen NOT NULL)
+    const comentarioEtapa = comentarioGeneral ||
+      servicioDecisiones
+        .filter(sd => sd.comentario?.trim())
+        .map(sd => `${sd.codigo.toUpperCase()}: ${sd.comentario.trim()}`)
+        .join(' | ') ||
+      '';
+
+    // Actualizar etapa con decisión global
     const { rows: [etapaActualizada] } = await client.query(SQL_UPDATE_ETAPA, [
-      nuevoEstado, aprobadorId, comentario, etapaId,
+      nuevoEstado, aprobadorId, comentarioEtapa, etapaId,
     ]);
 
     const solicitudId = etapa.id_solicitud;
@@ -116,13 +147,13 @@ async function decidir(etapaId, decision, comentario, aprobadorId) {
     );
 
     // 4. Aprobar → avanzar flujo
-    if (decision === 'aprobar') {
+    if (overallDecision === 'aprobar') {
       const { rows: [nextEtapa] } = await client.query(SQL_NEXT_ETAPA, [
         solicitudId, etapa.orden,
       ]);
 
       if (nextEtapa) {
-        // Activar siguiente etapa
+        // Activar siguiente etapa (servicios quedan en pendiente hasta final)
         await client.query(SQL_ACTIVATE_ETAPA, [nextEtapa.id]);
       } else {
         // Última etapa → todos los servicios atendidos, solicitud completada
@@ -131,15 +162,33 @@ async function decidir(etapaId, decision, comentario, aprobadorId) {
       }
     }
 
-    // 5. Rechazar → cerrar solicitud y servicios
-    if (decision === 'rechazar') {
+    // 4b. Si es aprobación con usuarioRedAsignado → pre-cargar datos_atencion del servicio C1
+    if (overallDecision === 'aprobar' && usuarioRedAsignado) {
+      await client.query(
+        `UPDATE solicitud_servicios ss
+            SET datos_atencion = COALESCE(ss.datos_atencion, '{}'::jsonb)
+                              || jsonb_build_object('usuarioRedCreado', $1::text),
+                updated_at = NOW()
+           FROM servicios sv
+          WHERE ss.id_servicio = sv.id
+            AND ss.id_solicitud = $2
+            AND sv.codigo = 'c1'`,
+        [usuarioRedAsignado, solicitudId],
+      );
+    }
+
+    // 5. Rechazar → cerrar solicitud y todos los servicios
+    if (overallDecision === 'rechazar') {
       await client.query(SQL_UPDATE_ALL_SERVICIOS, ['rechazado', solicitudId]);
       await client.query(SQL_UPDATE_SOLICITUD, ['rechazada', new Date(), solicitudId]);
     }
 
-    // 6. Observar → marcar solicitud y servicios como observada
-    if (decision === 'observar') {
-      await client.query(SQL_UPDATE_ALL_SERVICIOS, ['observado', solicitudId]);
+    // 6. Observar → actualizar cada servicio con su decisión individual
+    if (overallDecision === 'observar') {
+      for (const sd of servicioDecisiones) {
+        const estadoServicio = ESTADO_MAP[sd.decision] || 'observado';
+        await client.query(SQL_UPDATE_SERVICIO_ESTADO, [estadoServicio, solicitudId, sd.codigo]);
+      }
       await client.query(SQL_UPDATE_SOLICITUD, ['observada', null, solicitudId]);
     }
 
@@ -152,10 +201,10 @@ async function decidir(etapaId, decision, comentario, aprobadorId) {
 
     await client.query(SQL_INSERT_HISTORIAL, [
       solicitudId,
-      null, // ya no es por servicio individual
-      TIPO_EVENTO_MAP[decision],
+      null,
+      TIPO_EVENTO_MAP[overallDecision],
       nuevoEstado,
-      comentario,
+      comentarioEtapa,
       aprobadorId,
     ]);
 
@@ -165,7 +214,7 @@ async function decidir(etapaId, decision, comentario, aprobadorId) {
       etapa: etapaActualizada,
       solicitudId,
       numero: sol?.numero,
-      decision,
+      decision: overallDecision,
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -179,7 +228,7 @@ async function decidir(etapaId, decision, comentario, aprobadorId) {
    atender — Transacción de atención técnica (última etapa)
    Guarda datos de aprovisionamiento y marca TODOS los servicios como atendidos
    ────────────────────────────────────────────── */
-async function atender(etapaId, datosAtencion, comentario, aprobadorId) {
+async function atender(etapaId, datosAtencion, comentario, aprobadorId, rolesUsuario = []) {
   const client = await getClient();
 
   try {
@@ -194,6 +243,11 @@ async function atender(etapaId, datosAtencion, comentario, aprobadorId) {
     // 2. Validar estado
     if (!['pendiente', 'en_revision'].includes(etapa.estado)) {
       throw { status: 409, message: `La etapa ya fue procesada (estado: ${etapa.estado})` };
+    }
+
+    // 2b. Validar rol
+    if (rolesUsuario.length > 0 && !rolesUsuario.includes(etapa.rol_codigo)) {
+      throw { status: 403, message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})` };
     }
 
     // 3. Verificar que es la última etapa
@@ -224,7 +278,11 @@ async function atender(etapaId, datosAtencion, comentario, aprobadorId) {
     for (const ss of ssRows) {
       const srvData = datosAtencion[ss.codigo] || {};
       await client.query(
-        `UPDATE solicitud_servicios SET datos_atencion = $1, estado = 'atendido', updated_at = NOW() WHERE id = $2`,
+        `UPDATE solicitud_servicios
+            SET datos_atencion = COALESCE(datos_atencion, '{}'::jsonb) || $1::jsonb,
+                estado = 'atendido',
+                updated_at = NOW()
+          WHERE id = $2`,
         [JSON.stringify(srvData), ss.id],
       );
     }

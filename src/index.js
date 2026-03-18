@@ -104,6 +104,8 @@ async function applyPatches() {
     WHERE numero !~ '^SASI-[0-9]{4}-[0-9]{6}$'
   `)
 
+  await pool.query(`DROP FUNCTION IF EXISTS generar_numero_solicitud() CASCADE`)
+
   await pool.query(`
     CREATE OR REPLACE FUNCTION generar_numero_solicitud()
     RETURNS VARCHAR(20) AS $$

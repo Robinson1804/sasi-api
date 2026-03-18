@@ -144,6 +144,7 @@ async function obtenerPorId(id) {
   const { rows: etapaRows } = await query(
     `SELECT ea.id,
             ea.orden,
+            r.codigo   AS rol_codigo,
             r.nombre   AS rol_nombre,
             ea.estado,
             CASE WHEN ua.id IS NOT NULL
@@ -168,6 +169,7 @@ async function obtenerPorId(id) {
   const etapas = etapaRows.map(e => ({
     id:                   e.id,
     orden:                e.orden,
+    rolCodigo:            e.rol_codigo,
     rolNombre:            e.rol_nombre,
     estado:               e.estado,
     aprobadorNombre:      e.aprobador_nombre,
