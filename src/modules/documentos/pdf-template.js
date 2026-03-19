@@ -551,20 +551,87 @@ function formatValue(key, val) {
   if (val === true) return 'Sí';
   if (val === false) return null; // signal to skip this field
 
-  // Array handling — render as HTML list
+  // Array handling — render as HTML table or list
   if (Array.isArray(val)) {
-    if (val.length === 0) return null; // skip empty arrays
+    if (val.length === 0) return null;
+    const firstItem = val[0];
+
+    // If array of objects → render as mini-table
+    if (typeof firstItem === 'object' && firstItem !== null) {
+      // Collect columns: all keys present in ANY item with at least one non-empty value
+      const allKeys = new Set();
+      val.forEach(item => {
+        if (typeof item === 'object' && item !== null) {
+          Object.keys(item).forEach(k => { if (!EXCLUDE_FIELDS.has(k)) allKeys.add(k); });
+        }
+      });
+      const cols = [...allKeys].filter(k =>
+        val.some(item => {
+          const v = item[k];
+          return v !== null && v !== undefined && v !== '' && v !== false;
+        })
+      );
+      if (cols.length > 0) {
+        // Wide arrays (> 5 cols): render as cards to avoid overflow in PDF
+        if (cols.length > 5) {
+          const [hk1, hk2, ...bodyKeys] = cols;
+          const cards = val.map((item, idx) => {
+            const h1 = item[hk1];
+            const h2 = item[hk2];
+            const headerParts = [h1, h2]
+              .filter(v => v !== null && v !== undefined && v !== '')
+              .map(v => VALUE_MAP[String(v)] || escapeHtml(String(v)));
+            const headerText = headerParts.join(' — ') || `Usuario ${idx + 1}`;
+            const cells = bodyKeys.map(k => {
+              const v = item[k];
+              if (v === null || v === undefined || v === '') return '';
+              let display;
+              if (v === true) display = 'Sí';
+              else if (v === false) display = '';
+              else display = VALUE_MAP[String(v)] || escapeHtml(String(v));
+              if (!display) return '';
+              return `<div style="font-size:7pt; margin-bottom:2px;"><span style="color:#555;">${formatLabel(k)}: </span><strong>${display}</strong></div>`;
+            }).join('');
+            return `<div style="border:1px solid #ddd; border-radius:4px; margin-bottom:5px; overflow:hidden; page-break-inside:avoid;">
+              <div style="background:#e8eef7; padding:3px 8px; font-weight:700; font-size:8pt; color:#1e3a6e;">${idx + 1}. ${headerText}</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 12px; padding:5px 8px;">${cells}</div>
+            </div>`;
+          }).join('');
+          return `__HTML__<div style="margin-top:2px;">${cards}</div>`;
+        }
+
+        // Narrow arrays (≤ 5 cols): compact table
+        const thStyle = 'background:#1e3a6e; color:#fff; font-weight:600; padding:3px 6px; font-size:7pt; white-space:nowrap;';
+        const tdStyle = 'padding:2px 6px; font-size:7pt; border-bottom:1px solid #eee; vertical-align:top;';
+        const rows = val.map((item, rowIdx) => {
+          const bg = rowIdx % 2 === 1 ? 'background:#f7f9fc;' : '';
+          const cells = cols.map(k => {
+            const v = item[k];
+            let display;
+            if (v === null || v === undefined || v === '') display = '—';
+            else if (v === true) display = 'Sí';
+            else if (v === false) display = 'No';
+            else display = VALUE_MAP[String(v)] || escapeHtml(String(v));
+            return `<td style="${tdStyle}">${display}</td>`;
+          }).join('');
+          return `<tr style="${bg}">${cells}</tr>`;
+        }).join('');
+        const headers = cols.map(k => `<td style="${thStyle}">${formatLabel(k)}</td>`).join('');
+        return `__HTML__<div style="overflow-x:auto; margin-top:2px;"><table style="width:100%; border-collapse:collapse; font-size:7pt;"><tr>${headers}</tr>${rows}</table></div>`;
+      }
+    }
+
+    // Fallback: bullet list for simple values or objects without good columns
     const items = val.map(item => {
       if (typeof item === 'object' && item !== null) {
-        // Render object fields as "key: value" pairs
         const parts = Object.entries(item)
-          .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
-          .map(([k, v]) => `${formatLabel(k)}: ${v === true ? 'Sí' : (VALUE_MAP[String(v)] || String(v))}`);
-        return parts.join(' — ');
+          .filter(([k, v]) => !EXCLUDE_FIELDS.has(k) && v !== null && v !== undefined && v !== '' && v !== false)
+          .map(([k, v]) => `<strong>${formatLabel(k)}:</strong> ${v === true ? 'Sí' : escapeHtml(VALUE_MAP[String(v)] || String(v))}`);
+        return parts.join(' &nbsp;·&nbsp; ');
       }
-      return String(item);
+      return escapeHtml(String(item));
     });
-    return `__HTML__<ul style="margin:2px 0; padding-left:18px; list-style:disc;">${items.map(i => `<li style="font-size:8.5pt; margin-bottom:1px;">${escapeHtml(i)}</li>`).join('')}</ul>`;
+    return `__HTML__<ul style="margin:2px 0; padding-left:18px; list-style:disc;">${items.map(i => `<li style="font-size:8pt; margin-bottom:2px;">${i}</li>`).join('')}</ul>`;
   }
 
   // Object handling — render key-value pairs
