@@ -1,7 +1,10 @@
 const { Pool } = require('pg')
 require('dotenv').config()
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('railway.internal') ? false : { rejectUnauthorized: false }
+})
 
 // Helper: query(text, params) → result.rows
 const query = (text, params) => pool.query(text, params)

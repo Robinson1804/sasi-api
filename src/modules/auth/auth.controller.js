@@ -53,11 +53,7 @@ async function login(req, res) {
     await updateUltimoLogin(user.id);
 
     // --- auditoría ---
-    await registrarAuditoria({
-      idUsuario: user.id,
-      accion: 'LOGIN',
-      detalle: `Inicio de sesión exitoso — DNI ${user.dni}`,
-    });
+    await registrarAuditoria(user.id, 'LOGIN', 'usuarios', user.id, null, null, req.ip);
 
     // --- respuesta (snake_case → camelCase) ---
     const usuario = {
@@ -86,11 +82,7 @@ async function login(req, res) {
 
 async function logout(req, res) {
   try {
-    await registrarAuditoria({
-      idUsuario: req.user.id,
-      accion: 'LOGOUT',
-      detalle: 'Cierre de sesión',
-    });
+    await registrarAuditoria(req.user.id, 'LOGOUT', 'usuarios', req.user.id, null, null, req.ip);
 
     return ok(res, { message: 'Sesión cerrada correctamente' });
   } catch (err) {
