@@ -10,11 +10,11 @@ const {
 
 async function login(req, res) {
   try {
-    const { dni, password } = req.body;
+    const dni = String(req.body.dni || '').trim();
+    const { password } = req.body;
 
-    // --- validaciones ---
-    if (!dni || String(dni).length !== 8) {
-      return error(res, 400, 'El DNI es obligatorio y debe tener 8 caracteres');
+    if (!/^\d{8}$/.test(dni)) {
+      return error(res, 400, 'El DNI debe tener exactamente 8 dígitos');
     }
     if (!password) {
       return error(res, 400, 'La contraseña es obligatoria');
@@ -53,7 +53,18 @@ async function login(req, res) {
     await updateUltimoLogin(user.id);
 
     // --- auditoría ---
-    await registrarAuditoria(user.id, 'LOGIN', 'usuarios', user.id, null, null, req.ip);
+    await registrarAuditoria(
+  user.id,
+  'LOGIN',
+  'usuarios',
+  user.id,
+  null,
+  {
+    dni: user.dni,
+    evento: 'Inicio de sesión exitoso',
+  },
+  req.ip
+);
 
     // --- respuesta (snake_case → camelCase) ---
     const usuario = {
@@ -82,7 +93,18 @@ async function login(req, res) {
 
 async function logout(req, res) {
   try {
-    await registrarAuditoria(req.user.id, 'LOGOUT', 'usuarios', req.user.id, null, null, req.ip);
+    await registrarAuditoria(
+  req.user.id,
+  'LOGOUT',
+  'usuarios',
+  req.user.id,
+  null,
+  {
+    dni: req.user.dni,
+    evento: 'Cierre de sesión',
+  },
+  req.ip
+);
 
     return ok(res, { message: 'Sesión cerrada correctamente' });
   } catch (err) {
