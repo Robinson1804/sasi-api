@@ -486,59 +486,75 @@ async function confirmarFirmado(id, idUsuario) {
       [id]
     )
 
-    // 3. Crear flujo de aprobación UNIFICADO (deduplicado por rol)
+    // 3. Crear flujo de aprobación UNIFICADO desde config_flujo activo
+    // Importante: NO deduplicar solo por rol, porque soporte_tecnico puede aparecer
+    // dos veces: validación inicial y cierre final.
     const { rows: ssRows } = await client.query(
-      `SELECT ss.id AS ss_id, ss.id_servicio
-         FROM solicitud_servicios ss
-        WHERE ss.id_solicitud = $1`,
+      `SELECT ss.id AS ss_id, ss.id_servicio, sv.codigo AS servicio_codigo
+        FROM solicitud_servicios ss
+        JOIN servicios sv ON sv.id = ss.id_servicio
+        WHERE ss.id_solicitud = $1
+        ORDER BY sv.orden`,
       [id]
     )
 
     const allPasos = []
+
     for (const ss of ssRows) {
       const { rows: flujoRows } = await client.query(
         `SELECT id, orden, id_rol, sla_horas
-           FROM config_flujo
-          WHERE id_servicio = $1 AND activo = true
+          FROM config_flujo
+          WHERE id_servicio = $1
+            AND activo = true
           ORDER BY orden ASC`,
         [ss.id_servicio]
       )
-      allPasos.push(...flujoRows)
-    }
 
-    // Deduplicar por id_rol (mayor SLA)
-    const rolMap = new Map()
-    for (const paso of allPasos) {
-      const existing = rolMap.get(paso.id_rol)
-      if (!existing || paso.sla_horas > existing.sla_horas) {
-        rolMap.set(paso.id_rol, paso)
+      for (const paso of flujoRows) {
+        allPasos.push({
+          ...paso,
+          servicio_codigo: ss.servicio_codigo,
+        })
       }
     }
 
-    // Ordenar por mínimo orden original
-    const minOrdenPorRol = new Map()
+    // Deduplicar por posición lógica del flujo, no solo por rol.
+    // Así se conserva soporte_tecnico en orden 0 y soporte_tecnico en orden 3.
+    const etapaMap = new Map()
+
     for (const paso of allPasos) {
-      const current = minOrdenPorRol.get(paso.id_rol)
-      if (current === undefined || paso.orden < current) minOrdenPorRol.set(paso.id_rol, paso.orden)
+      const key = `${paso.orden}-${paso.id_rol}`
+      const existing = etapaMap.get(key)
+
+      if (!existing || Number(paso.sla_horas || 0) > Number(existing.sla_horas || 0)) {
+        etapaMap.set(key, paso)
+      }
     }
-    const dedupPasos = Array.from(rolMap.values()).sort((a, b) => {
-      const minA = minOrdenPorRol.get(a.id_rol) || 0
-      const minB = minOrdenPorRol.get(b.id_rol) || 0
-      if (minA !== minB) return minA - minB
-      return (a.sla_horas || 0) - (b.sla_horas || 0)
+
+    const pasosUnificados = Array.from(etapaMap.values()).sort((a, b) => {
+      if (a.orden !== b.orden) return a.orden - b.orden
+      return a.id_rol - b.id_rol
     })
 
-    // Crear etapas: primera en 'en_revision', resto 'pendiente'
-    let ordenUnificado = 1
-    for (const paso of dedupPasos) {
-      const estadoInicial = ordenUnificado === 1 ? 'en_revision' : 'pendiente'
+    if (pasosUnificados.length === 0) {
+      throw new Error('No existe flujo activo configurado para los servicios de la solicitud')
+    }
+
+    // Crear etapas: respetar orden desde config_flujo.
+    // La primera etapa por menor orden queda en revisión.
+    let primera = true
+
+    for (const paso of pasosUnificados) {
+      const estadoInicial = primera ? 'en_revision' : 'pendiente'
+
       await client.query(
         `INSERT INTO etapas_aprobacion
-           (id_solicitud, id_config, orden, id_rol, estado, fecha_inicio, sla_horas)
-         VALUES ($1, $2, $3, $4, $5, NOW(), $6)`,
-        [id, paso.id, ordenUnificado, paso.id_rol, estadoInicial, paso.sla_horas]
+          (id_solicitud, id_config, orden, id_rol, estado, fecha_inicio, sla_horas)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6)`,
+        [id, paso.id, paso.orden, paso.id_rol, estadoInicial, paso.sla_horas]
       )
-      ordenUnificado++
+
+      primera = false
     }
 
     // Marcar servicios como en_revision
