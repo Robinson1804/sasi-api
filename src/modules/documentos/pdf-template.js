@@ -315,7 +315,7 @@ function generarHtmlSolicitud(sol) {
       color: #888;
       margin-top: 2px;
     }
-    .firma-onpe {
+    .firma-ayuda {
       margin-top: 4px;
       font-size: 7.5pt;
       color: #1e3a6e;
@@ -404,25 +404,25 @@ function generarHtmlSolicitud(sol) {
     </div>
   </div>
 
-  <!-- FIRMA DIGITAL DEL JEFE INMEDIATO -->
-  <div class="firma-section">
-    <div class="seccion">
-      <div class="seccion-titulo">Aprobación del Jefe Inmediato</div>
-      <div class="seccion-body">
-        <div class="firma-box">
-          <div class="firma-linea"></div>
-          <div class="firma-cargo">Jefe Inmediato / Supervisor</div>
-          <div class="firma-nota">Firma Digital</div>
-          <div class="firma-onpe">Validar mediante Firma Digital ONPE — Reniec</div>
+  <!-- FIRMA Y SELLO DEL DIRECTOR -->
+    <div class="firma-section">
+      <div class="seccion">
+        <div class="seccion-titulo">Firma y Sello — Director Técnico / Director Ejecutivo</div>
+          <div class="seccion-body">
+              <div class="firma-box">
+              <div class="firma-linea"></div>
+              <div class="firma-cargo">Director Técnico / Director Ejecutivo</div>
+              <div class="firma-nota">Firma y sello</div>
+              <div class="firma-ayuda">Firma manuscrita o digital simple</div>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  </div>
 
   <!-- PIE DE PÁGINA -->
   <div class="pie">
     Documento generado automáticamente por el Sistema SASI — ${fecha}<br>
-    Este documento es válido únicamente con la firma digital del jefe inmediato a través de la plataforma ONPE.<br>
+    Este documento requiere la firma y sello del Director Técnico o Director Ejecutivo correspondiente.<br>
     Instituto Nacional de Estadística e Informática — Oficina Técnica de Informática
   </div>
 

@@ -25,6 +25,21 @@ const SQL_UPDATE_ULTIMO_LOGIN = `
   UPDATE usuarios SET ultimo_login = NOW() WHERE id = $1
 `;
 
+const SQL_FIND_USUARIO_BY_ID = `
+  SELECT u.id, u.password_hash, u.activo,
+         p.id AS id_personal, p.dni
+    FROM usuarios u
+    JOIN personal p ON u.id_personal = p.id
+   WHERE u.id = $1
+`;
+
+const SQL_UPDATE_PASSWORD_HASH = `
+  UPDATE usuarios
+     SET password_hash = $1,
+         updated_at = NOW()
+   WHERE id = $2
+`;
+
 async function findUsuarioByDni(dni) {
   const { rows } = await query(SQL_FIND_USUARIO_BY_DNI, [dni]);
   return rows[0] || null;
@@ -39,8 +54,20 @@ async function updateUltimoLogin(usuarioId) {
   await query(SQL_UPDATE_ULTIMO_LOGIN, [usuarioId]);
 }
 
+async function findUsuarioById(usuarioId) {
+  const { rows } = await query(SQL_FIND_USUARIO_BY_ID, [usuarioId]);
+  return rows[0] || null;
+}
+
+async function updatePasswordHash(usuarioId, passwordHash) {
+  await query(SQL_UPDATE_PASSWORD_HASH, [passwordHash, usuarioId]);
+}
+
+
 module.exports = {
   findUsuarioByDni,
   findRolesByUsuarioId,
   updateUltimoLogin,
+  findUsuarioById,
+  updatePasswordHash,
 };
