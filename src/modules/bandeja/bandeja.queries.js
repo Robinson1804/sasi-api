@@ -89,8 +89,16 @@ async function listarPorRol(roles) {
    Acepta decisiones por servicio: [{ codigo, decision, comentario }]
    La decisión global se deriva: rechazar > observar > aprobar
    ────────────────────────────────────────────── */
-async function decidir(etapaId, servicioDecisiones, comentarioGeneral, aprobadorId, usuarioRedAsignado = null, rolesUsuario = []) {
-  // Derivar decisión global: rechazar > observar > aprobar
+  async function decidir(
+    etapaId,
+    servicioDecisiones,
+    comentarioGeneral,
+    aprobadorId,
+    usuarioRedAsignado = null,
+    rolesUsuario = [],
+    datosAtencion = {},
+  ) {
+    // Derivar decisión global: rechazar > observar > aprobar
   let overallDecision = 'aprobar';
   for (const sd of servicioDecisiones) {
     if (sd.decision === 'rechazar') { overallDecision = 'rechazar'; break; }
@@ -140,6 +148,33 @@ async function decidir(etapaId, servicioDecisiones, comentarioGeneral, aprobador
     ]);
 
     const solicitudId = etapa.id_solicitud;
+
+        // Guardar datos técnicos en etapas intermedias.
+        // Ejemplo: Redes registra equipoDesbloqueado, fechaDesbloqueo, correoCreado, etc.
+        // El cierre final de Soporte seguirá usando atender().
+        if (overallDecision === 'aprobar' && datosAtencion && typeof datosAtencion === 'object') {
+          const codigosConDatos = Object.keys(datosAtencion).filter((codigo) => {
+            const data = datosAtencion[codigo];
+
+            return data &&
+              typeof data === 'object' &&
+              !Array.isArray(data) &&
+              Object.values(data).some((v) => String(v || '').trim());
+          });
+
+          for (const codigo of codigosConDatos) {
+            await client.query(
+              `UPDATE solicitud_servicios ss
+                  SET datos_atencion = COALESCE(ss.datos_atencion, '{}'::jsonb) || $1::jsonb,
+                      updated_at = NOW()
+                FROM servicios sv
+                WHERE ss.id_servicio = sv.id
+                  AND ss.id_solicitud = $2
+                  AND sv.codigo = $3`,
+              [JSON.stringify(datosAtencion[codigo]), solicitudId, codigo],
+            );
+          }
+        }
 
     // Obtener numero de solicitud
     const { rows: [sol] } = await client.query(

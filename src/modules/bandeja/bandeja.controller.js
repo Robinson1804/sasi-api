@@ -39,39 +39,62 @@ async function listar(req, res) {
 }
 
 /* ──────────────────────────────────────────────
-   POST /bandeja/:id/decidir — Aprobar/Observar/Rechazar por servicio
-   Body: { servicioDecisiones: [{ codigo, decision, comentario }], usuarioRedAsignado? }
+   POST /bandeja/:id/decidir
+   Body:
+   {
+     servicioDecisiones: [{ codigo, decision, comentario }],
+     usuarioRedAsignado?,
+     datosAtencion?
+   }
    ────────────────────────────────────────────── */
 async function decidirCtrl(req, res) {
   try {
     const etapaId = Number(req.params.id);
-    const { servicioDecisiones, usuarioRedAsignado } = req.body;
+    const { servicioDecisiones, usuarioRedAsignado, datosAtencion } = req.body;
 
-    // Validar que el array existe y no está vacío
+    if (!Number.isInteger(etapaId) || etapaId <= 0) {
+      return error(res, 400, 'ID de etapa inválido');
+    }
+
     if (!Array.isArray(servicioDecisiones) || servicioDecisiones.length === 0) {
       return error(res, 400, 'Se requieren las decisiones por servicio (servicioDecisiones)');
     }
 
-    // Validar cada entrada
     for (const sd of servicioDecisiones) {
       if (!sd.codigo || typeof sd.codigo !== 'string') {
         return error(res, 400, 'Cada decisión debe incluir el código de servicio');
       }
+
       if (!DECISIONES_VALIDAS.includes(sd.decision)) {
-        return error(res, 400, `Decisión inválida para ${sd.codigo}: "${sd.decision}". Valores permitidos: ${DECISIONES_VALIDAS.join(', ')}`);
+        return error(
+          res,
+          400,
+          `Decisión inválida para ${sd.codigo}: "${sd.decision}". Valores permitidos: ${DECISIONES_VALIDAS.join(', ')}`
+        );
       }
+
       if ((sd.decision === 'observar' || sd.decision === 'rechazar') && !sd.comentario?.trim()) {
-        return error(res, 400, `El comentario es obligatorio para observar o rechazar (servicio: ${sd.codigo})`);
+        return error(
+          res,
+          400,
+          `El comentario es obligatorio para observar o rechazar (servicio: ${sd.codigo})`
+        );
       }
     }
+
+    const datosAtencionValidos =
+      datosAtencion && typeof datosAtencion === 'object' && !Array.isArray(datosAtencion)
+        ? datosAtencion
+        : {};
 
     const resultado = await decidir(
       etapaId,
       servicioDecisiones,
-      null, // comentario general — se construye automáticamente en queries
+      null,
       req.user.id,
       (usuarioRedAsignado || '').trim() || null,
       req.user.roles || [],
+      datosAtencionValidos
     );
 
     return ok(res, resultado);
@@ -79,33 +102,49 @@ async function decidirCtrl(req, res) {
     if (err.status) {
       return error(res, err.status, err.message);
     }
+
     console.error('bandeja.decidir:', err);
     return error(res, 500, 'Error al procesar la decisión');
   }
 }
 
 /* ──────────────────────────────────────────────
-   POST /bandeja/:id/atender — Atender (provisionar) servicio
+   POST /bandeja/:id/atender — Atender cierre técnico
    ────────────────────────────────────────────── */
 async function atenderCtrl(req, res) {
   try {
     const etapaId = Number(req.params.id);
     const { datosAtencion, comentario } = req.body;
 
-    if (!datosAtencion || typeof datosAtencion !== 'object') {
+    if (!Number.isInteger(etapaId) || etapaId <= 0) {
+      return error(res, 400, 'ID de etapa inválido');
+    }
+
+    if (!datosAtencion || typeof datosAtencion !== 'object' || Array.isArray(datosAtencion)) {
       return error(res, 400, 'Los datos de atención son obligatorios');
     }
 
-    const resultado = await atender(etapaId, datosAtencion, (comentario || '').trim(), req.user.id, req.user.roles || []);
+    const resultado = await atender(
+      etapaId,
+      datosAtencion,
+      (comentario || '').trim(),
+      req.user.id,
+      req.user.roles || []
+    );
 
     return ok(res, resultado);
   } catch (err) {
     if (err.status) {
       return error(res, err.status, err.message);
     }
+
     console.error('bandeja.atender:', err);
     return error(res, 500, 'Error al procesar la atención');
   }
 }
 
-module.exports = { listar, decidir: decidirCtrl, atender: atenderCtrl };
+module.exports = {
+  listar,
+  decidir: decidirCtrl,
+  atender: atenderCtrl,
+};
