@@ -76,6 +76,17 @@ const SQL_INSERT_HISTORIAL = `
   VALUES ($1, $2::int, $3, $4, $5, $6)
 `;
 
+const SQL_GET_SERVICIOS_SOLICITUD = `
+  SELECT
+    sv.codigo,
+    ss.datos,
+    ss.datos_atencion
+  FROM solicitud_servicios ss
+  JOIN servicios sv ON sv.id = ss.id_servicio
+  WHERE ss.id_solicitud = $1
+    AND sv.codigo = ANY($2)
+`;
+
 /* ──────────────────────────────────────────────
    listarPorRol
    ────────────────────────────────────────────── */
@@ -149,6 +160,77 @@ async function listarPorRol(roles) {
 
     const solicitudId = etapa.id_solicitud;
 
+        const codigosDecision = servicioDecisiones.map((sd) => sd.codigo);
+
+        const { rows: serviciosDecision } = await client.query(
+          SQL_GET_SERVICIOS_SOLICITUD,
+          [solicitudId, codigosDecision],
+        );
+
+        const servicioPorCodigo = new Map(
+          serviciosDecision.map((s) => [s.codigo, s]),
+        );
+
+        const decisionC1 = servicioDecisiones.find((sd) => sd.codigo === 'c1');
+        const servicioC1 = servicioPorCodigo.get('c1');
+
+        const esC1Creacion =
+          Boolean(decisionC1) &&
+          servicioC1?.datos?.tipoOperacion === 'creacion';
+
+        const c1AprobadoCreacion =
+          esC1Creacion &&
+          decisionC1?.decision === 'aprobar';
+
+        // Seguridad debe registrar el usuario de red asignado solo para C1 creación.
+        if (
+          etapa.rol_codigo === 'seguridad_accesos' &&
+          c1AprobadoCreacion &&
+          !String(usuarioRedAsignado || '').trim()
+        ) {
+          throw {
+            status: 400,
+            message: 'Debe registrar el usuario de red asignado para C1 creación',
+          };
+        }
+
+        // Redes debe registrar datos técnicos al aprobar C1 creación.
+        if (
+          etapa.rol_codigo === 'equipo_redes' &&
+          c1AprobadoCreacion
+        ) {
+          const datosC1 = datosAtencion?.c1 || {};
+          const usuarioRedCreado = String(datosC1.usuarioRedCreado || '').trim();
+          const correoCreado = String(datosC1.correoCreado || '').trim();
+          const perfilInternet = String(datosC1.perfilInternet || '').trim();
+
+          if (!usuarioRedCreado) {
+            throw {
+              status: 400,
+              message: 'Redes debe confirmar el usuario de red creado',
+            };
+          }
+
+          if (!correoCreado) {
+            throw {
+              status: 400,
+              message: 'Redes debe registrar el correo institucional asociado',
+            };
+          }
+
+          if (!perfilInternet) {
+            throw {
+              status: 400,
+              message: 'Redes debe confirmar el perfil de internet asignado',
+            };
+          }
+
+          datosAtencion.c1 = {
+            ...datosC1,
+            capacidadCorreo: datosC1.capacidadCorreo || '100 MB',
+          };
+        }
+
         // Guardar datos técnicos en etapas intermedias.
         // Ejemplo: Redes registra equipoDesbloqueado, fechaDesbloqueo, correoCreado, etc.
         // El cierre final de Soporte seguirá usando atender().
@@ -197,14 +279,19 @@ async function listarPorRol(roles) {
       }
     }
 
-    // 4b. Si es aprobación con usuarioRedAsignado → pre-cargar datos_atencion del servicio C1
-    if (overallDecision === 'aprobar' && usuarioRedAsignado) {
+    // 4b. Seguridad asigna el usuario de red para C1 creación.
+    // Se guarda como usuarioRedAsignado; Redes luego confirma usuarioRedCreado.
+    if (
+      overallDecision === 'aprobar' &&
+      etapa.rol_codigo === 'seguridad_accesos' &&
+      usuarioRedAsignado
+    ) {
       await client.query(
         `UPDATE solicitud_servicios ss
             SET datos_atencion = COALESCE(ss.datos_atencion, '{}'::jsonb)
-                              || jsonb_build_object('usuarioRedCreado', $1::text),
+                              || jsonb_build_object('usuarioRedAsignado', $1::text),
                 updated_at = NOW()
-           FROM servicios sv
+          FROM servicios sv
           WHERE ss.id_servicio = sv.id
             AND ss.id_solicitud = $2
             AND sv.codigo = 'c1'`,
