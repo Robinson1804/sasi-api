@@ -252,6 +252,78 @@ async function obtenerPorId(id) {
   }
 }
 
+function parseDateOnly(value) {
+  if (!value || typeof value !== 'string') return null
+
+  const date = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return null
+
+  return date
+}
+
+function formatDatePE(value) {
+  if (!value) return ''
+
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  return date.toLocaleDateString('es-PE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
+}
+
+function todayDateOnly() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+function validarFechasPermiso(servicios, fechaFinContrato) {
+  const contratoDate = fechaFinContrato ? new Date(fechaFinContrato) : null
+  const hoy = todayDateOnly()
+
+  for (const srv of servicios) {
+    if (!['c4', 'c5', 'c7', 'c8'].includes(srv.codigoServicio)) continue
+
+    const datos = srv.datos || {}
+
+    if (srv.codigoServicio === 'c8' && datos.tipoAcceso !== 'temporal') {
+      continue
+    } 
+
+
+    const fechaInicio = parseDateOnly(datos.fechaInicio)
+    const fechaTermino = parseDateOnly(
+      srv.codigoServicio === 'c8'
+        ? datos.fechaFin
+        : datos.fechaTermino
+    )
+
+    if (!fechaInicio) {
+      throw new Error(`La fecha de inicio del permiso es obligatoria para ${srv.codigoServicio.toUpperCase()}`)
+    }
+
+    if (!fechaTermino) {
+      throw new Error(`La fecha de fin del permiso es obligatoria para ${srv.codigoServicio.toUpperCase()}`)
+    }
+
+    if (fechaInicio < hoy) {
+      throw new Error(`La fecha de inicio del permiso no puede ser menor a hoy`)
+    }
+
+    if (fechaTermino < fechaInicio) {
+      throw new Error(`La fecha de fin del permiso no puede ser menor a la fecha de inicio`)
+    }
+
+    if (contratoDate && fechaTermino > contratoDate) {
+      throw new Error(
+        `La fecha de fin del permiso no puede superar su fecha de fin de contrato (${formatDatePE(contratoDate)})`
+      )
+    }
+  }
+}
+
 // =============================== CREAR =====================================
 
 async function crear(data) {
@@ -260,6 +332,19 @@ async function crear(data) {
 
   try {
     await client.query('BEGIN')
+
+    const { rows: personalRows } = await client.query(
+      `SELECT fecha_fin_contrato
+         FROM personal
+        WHERE id = $1`,
+      [idSolicitante]
+    )
+
+    if (personalRows.length === 0) {
+      throw new Error('Personal no encontrado para validar fechas de permiso')
+    }
+
+    const fechaFinContrato = personalRows[0].fecha_fin_contrato
 
     // 1. Generar numero
     const { rows: numRows } = await client.query(
