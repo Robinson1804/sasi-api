@@ -75,7 +75,7 @@ async function obtenerPorId(req, res) {
 // POST /solicitudes
 async function crear(req, res) {
   try {
-   
+    const { tipo, servicios, usuariosMasivos } = req.body
 
     // Validaciones basicas
     if (!servicios || !Array.isArray(servicios) || servicios.length === 0) {
@@ -114,6 +114,8 @@ async function crear(req, res) {
   } catch (err) {
     console.error('solicitudes.crear:', err)
 
+    const message = err.message || ''
+
     const validationMessages = [
       'fecha de inicio',
       'fecha de fin',
@@ -121,18 +123,19 @@ async function crear(req, res) {
       'fecha de baja',
       'fecha de fin del permiso',
       'fecha de fin de contrato',
-      'Personal no encontrado',
-      'Servicio con codigo',
+      'personal no encontrado',
+      'servicio con codigo',
+      'servicio con código',
     ]
 
     const isValidationError = validationMessages.some((msg) =>
-      err.message?.includes(msg)
+      message.toLowerCase().includes(msg)
     )
 
     return error(
       res,
       isValidationError ? 400 : 500,
-      isValidationError ? err.message : 'Error al crear la solicitud'
+      isValidationError ? message : 'Error al crear la solicitud'
     )
   }
 }
