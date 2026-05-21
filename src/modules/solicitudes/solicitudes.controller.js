@@ -75,7 +75,7 @@ async function obtenerPorId(req, res) {
 // POST /solicitudes
 async function crear(req, res) {
   try {
-    const { tipo, servicios, usuariosMasivos, compromisoAceptado } = req.body
+   
 
     // Validaciones basicas
     if (!servicios || !Array.isArray(servicios) || servicios.length === 0) {
@@ -101,18 +101,37 @@ async function crear(req, res) {
 
     // Auditoria
     await registrarAuditoria(
-      req.user.id, 'CREAR_SOLICITUD', 'solicitudes',
-      String(result.id), null, { numero: result.numero, tipo, servicios },
+      req.user.id,
+      'CREAR_SOLICITUD',
+      'solicitudes',
+      String(result.id),
+      null,
+      { numero: result.numero, tipo, servicios },
       req.ip
     )
 
     return created(res, result)
   } catch (err) {
     console.error('solicitudes.crear:', err)
-    const msg = err.message.includes('no encontrado')
-      ? err.message
-      : 'Error al crear la solicitud'
-    return error(res, err.message.includes('no encontrado') ? 400 : 500, msg)
+
+    const validationMessages = [
+      'fecha de inicio',
+      'fecha de fin',
+      'fecha de fin del permiso',
+      'fecha de fin de contrato',
+      'Personal no encontrado',
+      'Servicio con codigo',
+    ]
+
+    const isValidationError = validationMessages.some((msg) =>
+      err.message?.includes(msg)
+    )
+
+    return error(
+      res,
+      isValidationError ? 400 : 500,
+      isValidationError ? err.message : 'Error al crear la solicitud'
+    )
   }
 }
 
