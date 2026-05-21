@@ -284,20 +284,27 @@ function validarFechasPermiso(servicios, fechaFinContrato) {
   const hoy = todayDateOnly()
 
   for (const srv of servicios) {
-    if (!['c4', 'c5', 'c7', 'c8'].includes(srv.codigoServicio)) continue
+    if (!['c4', 'c5', 'c6', 'c7', 'c8', 'c9'].includes(srv.codigoServicio)) continue
 
     const datos = srv.datos || {}
 
+    // C8 solo valida fechas cuando el acceso es temporal.
     if (srv.codigoServicio === 'c8' && datos.tipoAcceso !== 'temporal') {
       continue
-    } 
+    }
 
+    const fechaInicio = parseDateOnly(
+      srv.codigoServicio === 'c9'
+        ? datos.fechaAlta
+        : datos.fechaInicio
+    )
 
-    const fechaInicio = parseDateOnly(datos.fechaInicio)
     const fechaTermino = parseDateOnly(
       srv.codigoServicio === 'c8'
         ? datos.fechaFin
-        : datos.fechaTermino
+        : srv.codigoServicio === 'c9'
+          ? datos.fechaBaja
+          : datos.fechaTermino
     )
 
     if (!fechaInicio) {
@@ -309,17 +316,53 @@ function validarFechasPermiso(servicios, fechaFinContrato) {
     }
 
     if (fechaInicio < hoy) {
-      throw new Error(`La fecha de inicio del permiso no puede ser menor a hoy`)
+      throw new Error('La fecha de inicio del permiso no puede ser menor a hoy')
     }
 
     if (fechaTermino < fechaInicio) {
-      throw new Error(`La fecha de fin del permiso no puede ser menor a la fecha de inicio`)
+      throw new Error('La fecha de fin del permiso no puede ser menor a la fecha de inicio')
     }
 
     if (contratoDate && fechaTermino > contratoDate) {
       throw new Error(
         `La fecha de fin del permiso no puede superar su fecha de fin de contrato (${formatDatePE(contratoDate)})`
       )
+    }
+
+    // Validación adicional para usuarios adicionales de C9.
+    if (srv.codigoServicio === 'c9' && Array.isArray(datos.usuarios)) {
+      for (let i = 0; i < datos.usuarios.length; i += 1) {
+        const usuario = datos.usuarios[i]
+
+        const fechaAlta = parseDateOnly(usuario.fechaAlta)
+        const fechaBaja = parseDateOnly(usuario.fechaBaja)
+
+        // Si el usuario adicional no tiene fechas, se omite.
+        // Si llena una, debe llenar ambas.
+        if (!usuario.fechaAlta && !usuario.fechaBaja) continue
+
+        if (!fechaAlta) {
+          throw new Error(`La fecha de alta del usuario adicional ${i + 1} es obligatoria para C9`)
+        }
+
+        if (!fechaBaja) {
+          throw new Error(`La fecha de baja del usuario adicional ${i + 1} es obligatoria para C9`)
+        }
+
+        if (fechaAlta < hoy) {
+          throw new Error(`La fecha de alta del usuario adicional ${i + 1} no puede ser menor a hoy`)
+        }
+
+        if (fechaBaja < fechaAlta) {
+          throw new Error(`La fecha de baja del usuario adicional ${i + 1} no puede ser menor a la fecha de alta`)
+        }
+
+        if (contratoDate && fechaBaja > contratoDate) {
+          throw new Error(
+            `La fecha de fin del permiso no puede superar su fecha de fin de contrato (${formatDatePE(contratoDate)})`
+          )
+        }
+      }
     }
   }
 }
@@ -345,6 +388,8 @@ async function crear(data) {
     }
 
     const fechaFinContrato = personalRows[0].fecha_fin_contrato
+
+    validarFechasPermiso(servicios, fechaFinContrato)
 
     // 1. Generar numero
     const { rows: numRows } = await client.query(

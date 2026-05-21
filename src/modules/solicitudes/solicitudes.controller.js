@@ -117,6 +117,8 @@ async function crear(req, res) {
     const validationMessages = [
       'fecha de inicio',
       'fecha de fin',
+      'fecha de alta',
+      'fecha de baja',
       'fecha de fin del permiso',
       'fecha de fin de contrato',
       'Personal no encontrado',
