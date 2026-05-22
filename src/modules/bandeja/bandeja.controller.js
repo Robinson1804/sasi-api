@@ -29,6 +29,8 @@ async function listar(req, res) {
       tipo: r.tipo,
       etapaNombre: r.rol_nombre,
       etapaEstado: r.etapa_estado,
+      categoria: r.categoria,
+      categoriaLabel: r.categoria_label,
     }));
 
     return ok(res, items);

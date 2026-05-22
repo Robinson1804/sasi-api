@@ -4,15 +4,82 @@ const { query, getClient } = require('../../config/db');
    SQL — Listar bandeja por rol(es) del usuario
    ────────────────────────────────────────────── */
 const SQL_LISTAR_POR_ROL = `
-  SELECT etapa_id, solicitud_id, numero, solicitante, sede,
-         tipo, id_rol, rol_codigo, rol_nombre, etapa_estado,
-         fecha_inicio, sla_horas, horas_transcurridas,
-         vencio_sla, servicios_codigos, horas_restantes_sla
-    FROM v_bandeja_aprobacion
-   WHERE rol_codigo = ANY($1)
-     AND etapa_estado IN ('pendiente', 'en_revision')
-   ORDER BY horas_restantes_sla ASC
-`;
+  WITH max_etapas AS (
+    SELECT id_solicitud, MAX(orden) AS max_orden
+      FROM etapas_aprobacion
+     GROUP BY id_solicitud
+  )
+  SELECT
+         v.etapa_id,
+         v.solicitud_id,
+         v.numero,
+         v.solicitante,
+         v.sede,
+         v.tipo,
+         v.id_rol,
+         v.rol_codigo,
+         v.rol_nombre,
+         v.etapa_estado,
+         v.fecha_inicio,
+         v.sla_horas,
+         v.horas_transcurridas,
+         v.vencio_sla,
+         v.servicios_codigos,
+         v.horas_restantes_sla,
+         ea.orden,
+         me.max_orden,
+         CASE
+           WHEN v.rol_codigo = 'soporte_tecnico' AND ea.orden = 0 THEN 'validacion'
+           WHEN v.rol_codigo = 'soporte_tecnico' AND ea.orden = me.max_orden THEN 'cierre'
+           ELSE 'revision'
+         END AS categoria,
+         CASE
+           WHEN v.rol_codigo = 'soporte_tecnico' AND ea.orden = 0 THEN 'Validación inicial'
+           WHEN v.rol_codigo = 'soporte_tecnico' AND ea.orden = me.max_orden THEN 'Cierre técnico'
+           ELSE 'Revisión pendiente'
+         END AS categoria_label
+    FROM v_bandeja_aprobacion v
+    JOIN etapas_aprobacion ea ON ea.id = v.etapa_id
+    JOIN max_etapas me ON me.id_solicitud = v.solicitud_id
+   WHERE v.rol_codigo = ANY($1)
+     AND v.etapa_estado IN ('pendiente', 'en_revision')
+   ORDER BY v.fecha_inicio ASC
+`
+
+const SQL_LISTAR_OBSERVADAS_SOPORTE = `
+  SELECT
+         s.id AS etapa_id,
+         s.id AS solicitud_id,
+         s.numero,
+         s.snap_nombres AS solicitante,
+         s.snap_sede AS sede,
+         s.tipo,
+         NULL::int AS id_rol,
+         'soporte_tecnico' AS rol_codigo,
+         'Soporte Técnico' AS rol_nombre,
+         s.estado AS etapa_estado,
+         s.updated_at AS fecha_inicio,
+         NULL::numeric AS sla_horas,
+         NULL::numeric AS horas_transcurridas,
+         false AS vencio_sla,
+         COALESCE(
+           array_agg(DISTINCT sv.codigo ORDER BY sv.codigo)
+             FILTER (WHERE sv.codigo IS NOT NULL),
+           ARRAY[]::varchar[]
+         ) AS servicios_codigos,
+         NULL::numeric AS horas_restantes_sla,
+         NULL::smallint AS orden,
+         NULL::smallint AS max_orden,
+         'observada' AS categoria,
+         'Observada' AS categoria_label
+    FROM solicitudes s
+    LEFT JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
+    LEFT JOIN servicios sv ON sv.id = ss.id_servicio
+   WHERE s.estado = 'observada'
+     AND s.id_solicitud_padre IS NULL
+   GROUP BY s.id
+   ORDER BY s.updated_at DESC
+`
 
 /* ──────────────────────────────────────────────
    SQL — Helpers usados dentro de la transacción
@@ -91,8 +158,20 @@ const SQL_GET_SERVICIOS_SOLICITUD = `
    listarPorRol
    ────────────────────────────────────────────── */
 async function listarPorRol(roles) {
-  const { rows } = await query(SQL_LISTAR_POR_ROL, [roles]);
-  return rows;
+  const { rows } = await query(SQL_LISTAR_POR_ROL, [roles])
+
+  if (!roles.includes('soporte_tecnico')) {
+    return rows
+  }
+
+  const { rows: observadas } = await query(SQL_LISTAR_OBSERVADAS_SOPORTE)
+
+  const existentes = new Set(rows.map((r) => Number(r.solicitud_id)))
+  const observadasSinDuplicar = observadas.filter(
+    (r) => !existentes.has(Number(r.solicitud_id)),
+  )
+
+  return [...rows, ...observadasSinDuplicar]
 }
 
 /* ──────────────────────────────────────────────
