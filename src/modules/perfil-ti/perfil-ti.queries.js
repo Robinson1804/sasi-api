@@ -37,4 +37,21 @@ async function obtenerEstadisticas(idPersonal) {
   return rows[0]
 }
 
-module.exports = { obtenerServiciosAsignados, obtenerEstadisticas }
+async function actualizarTelefono(idPersonal, telefono) {
+  const { rows } = await query(
+    `UPDATE personal
+        SET telefono = $2,
+            updated_at = NOW()
+      WHERE id = $1
+      RETURNING telefono`,
+    [idPersonal, telefono],
+  )
+
+  return rows[0]
+}
+
+module.exports = {
+  obtenerServiciosAsignados,
+  obtenerEstadisticas,
+  actualizarTelefono,
+}
