@@ -61,6 +61,7 @@ const SQL_SOLICITUD_DATOS = `
          COALESCE(s.snap_sede, se.nombre) AS snap_sede,
          COALESCE(s.snap_oficina, p.oficina) AS snap_oficina,
          COALESCE(s.snap_correo, p.correo) AS snap_correo,
+         COALESCE(s.snap_telefono, p.telefono) AS snap_telefono,
          s.estado, s.fecha_creacion,
          json_agg(json_build_object(
            'codigo', sv.codigo,
@@ -74,7 +75,7 @@ const SQL_SOLICITUD_DATOS = `
     LEFT JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
     LEFT JOIN servicios sv           ON sv.id = ss.id_servicio
    WHERE s.id = $1
-   GROUP BY s.id, p.nombres, p.apellidos, p.dni, p.cargo, p.tipo_vinculo, se.nombre, p.oficina, p.correo
+   GROUP BY s.id, p.nombres, p.apellidos, p.dni, p.cargo, p.tipo_vinculo, se.nombre, p.oficina, p.correo, p.telefono
 `;
 
 const SQL_USUARIOS_MASIVOS = `

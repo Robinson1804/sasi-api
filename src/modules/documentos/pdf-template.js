@@ -369,6 +369,7 @@ function generarHtmlSolicitud(sol) {
         <tr><td class="label">Oficina</td><td class="value">${escapeHtml(sol.snap_oficina || '—')}</td></tr>
         <tr><td class="label">Sede</td><td class="value">${escapeHtml(sol.snap_sede || '—')}</td></tr>
         <tr><td class="label">Correo Institucional</td><td class="value">${escapeHtml(sol.snap_correo || '—')}</td></tr>
+        <tr><td class="label">Teléfono / Anexo</td><td class="value">${escapeHtml(sol.snap_telefono || '—')}</td></tr>
       </table>
     </div>
   </div>

@@ -486,9 +486,9 @@ async function enviar(id, idUsuario) {
     // 2. Obtener datos de personal para snapshot
     const { rows: perRows } = await client.query(
       `SELECT p.apellidos, p.nombres, p.dni, p.cargo, p.tipo_vinculo,
-              p.correo, p.oficina, s.nombre AS sede
-         FROM personal p
-         LEFT JOIN sedes s ON s.id = p.id_sede
+              p.correo, p.telefono, p.oficina, s.nombre AS sede
+        FROM personal p
+        LEFT JOIN sedes s ON s.id = p.id_sede
         WHERE p.id = $1`,
       [sol.id_solicitante]
     )
@@ -507,14 +507,21 @@ async function enviar(id, idUsuario) {
               snap_cargo       = $4,
               snap_vinculo     = $5,
               snap_correo      = $6,
-              snap_oficina     = $7,
-              snap_sede        = $8,
+              snap_telefono    = $7,
+              snap_oficina     = $8,
+              snap_sede        = $9,
               updated_at       = NOW()
         WHERE id = $1`,
       [
         id,
-        snapNombres, per.dni, per.cargo, per.tipo_vinculo,
-        per.correo, per.oficina, per.sede,
+        snapNombres,
+        per.dni,
+        per.cargo,
+        per.tipo_vinculo,
+        per.correo,
+        per.telefono,
+        per.oficina,
+        per.sede,
       ]
     )
 

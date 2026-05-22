@@ -21,6 +21,7 @@ function mapSolicitudRow(row) {
     snapCargo:          row.snap_cargo,
     snapVinculo:        row.snap_vinculo,
     snapCorreo:         row.snap_correo,
+    snapTelefono:       row.snap_telefono,
     snapOficina:        row.snap_oficina,
     snapSede:           row.snap_sede,
     motivoCancelacion:  row.motivo_cancelacion,
