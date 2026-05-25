@@ -154,6 +154,18 @@ const SQL_GET_SERVICIOS_SOLICITUD = `
     AND sv.codigo = ANY($2)
 `;
 
+const SQL_UPDATE_CORREO_SOLICITANTE = `
+  UPDATE personal p
+     SET correo = $2,
+         updated_at = NOW()
+    FROM solicitudes s
+   WHERE s.id = $1
+     AND p.id = s.id_solicitante
+     AND s.tipo = 'individual'
+     AND (p.correo IS NULL OR TRIM(p.correo) = '')
+  RETURNING p.id, p.correo
+`;
+
 /* ──────────────────────────────────────────────
    listarPorRol
    ────────────────────────────────────────────── */
@@ -308,6 +320,23 @@ async function listarPorRol(roles) {
             ...datosC1,
             capacidadCorreo: datosC1.capacidadCorreo || '100 MB',
           };
+
+          const { rows: correoActualizadoRows } = await client.query(
+            SQL_UPDATE_CORREO_SOLICITANTE,
+            [solicitudId, correoCreado],
+          );
+
+          if (correoActualizadoRows.length > 0) {
+            await client.query(SQL_INSERT_HISTORIAL, [
+              solicitudId,
+              null,
+              'APROBACION',
+              'correo_actualizado',
+              `Correo institucional actualizado en perfil: ${correoCreado}`,
+              aprobadorId,
+            ]);
+          }
+
         }
 
         // Guardar datos técnicos en etapas intermedias.
