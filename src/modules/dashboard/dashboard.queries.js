@@ -25,10 +25,10 @@ async function getKPIs() {
       subtexto: 'Solicitudes denegadas',
     },
     {
-      valor: Number(r.sla_vencidos) || 0,
-      label: 'SLA Vencidos',
+      valor: Number(r.solicitudes_activas) || 0,
+      label: 'Pendientes en Bandeja',
       color: '#d97706',
-      subtexto: 'Requieren atención urgente',
+      subtexto: 'Esperan acción de un área',
     },
     {
       valor: r.tasa_aprobacion != null ? `${Number(r.tasa_aprobacion)}%` : '0%',
@@ -69,6 +69,69 @@ async function getServiciosStats() {
   }));
 }
 
+/* ---------- Resumen Bandeja de Aprobación ---------- */
+async function getBandejaResumen() {
+  const sql = `
+    WITH max_etapas AS (
+      SELECT id_solicitud, MAX(orden) AS max_orden
+        FROM etapas_aprobacion
+       GROUP BY id_solicitud
+    ),
+    activas AS (
+      SELECT
+        CASE
+          WHEN r.codigo = 'soporte_tecnico' AND ea.orden = 0 THEN 'validacion'
+          WHEN r.codigo = 'soporte_tecnico' AND ea.orden = me.max_orden THEN 'cierre'
+          ELSE 'revision'
+        END AS categoria,
+        COUNT(*) AS total
+      FROM etapas_aprobacion ea
+      JOIN roles r ON r.id = ea.id_rol
+      JOIN max_etapas me ON me.id_solicitud = ea.id_solicitud
+      WHERE ea.estado IN ('pendiente', 'en_revision')
+      GROUP BY categoria
+    ),
+    observadas AS (
+      SELECT 'observadas' AS categoria, COUNT(*) AS total
+        FROM solicitudes
+       WHERE estado = 'observada'
+         AND id_solicitud_padre IS NULL
+    )
+    SELECT categoria, total FROM activas
+    UNION ALL
+    SELECT categoria, total FROM observadas
+  `
+
+  const { rows } = await query(sql)
+
+  const resumen = {
+    total: 0,
+    validacion: 0,
+    revision: 0,
+    observadas: 0,
+    cierre: 0,
+  }
+
+  for (const row of rows) {
+    const categoria = row.categoria
+    const total = Number(row.total) || 0
+
+    if (categoria === 'validacion') resumen.validacion += total
+    if (categoria === 'revision') resumen.revision += total
+    if (categoria === 'observadas') resumen.observadas += total
+    if (categoria === 'cierre') resumen.cierre += total
+  }
+
+  resumen.total =
+    resumen.validacion +
+    resumen.revision +
+    resumen.observadas +
+    resumen.cierre
+
+  return resumen
+}
+
+
 /* ---------- Alertas SLA ---------- */
 async function getAlertasSLA() {
   const sql = `
@@ -101,4 +164,4 @@ async function getAlertasSLA() {
   });
 }
 
-module.exports = { getKPIs, getServiciosStats, getAlertasSLA };
+module.exports = { getKPIs, getServiciosStats, getAlertasSLA, getBandejaResumen };

@@ -1,5 +1,5 @@
 const { ok, error } = require('../../utils/response');
-const { getKPIs, getServiciosStats, getAlertasSLA } = require('./dashboard.queries');
+const { getKPIs, getServiciosStats, getAlertasSLA, getBandejaResumen } = require('./dashboard.queries');
 
 async function kpis(req, res) {
   try {
@@ -31,4 +31,14 @@ async function alertasSla(req, res) {
   }
 }
 
-module.exports = { kpis, serviciosStats, alertasSla };
+async function bandejaResumen(req, res) {
+  try {
+    const data = await getBandejaResumen()
+    return ok(res, data)
+  } catch (err) {
+    console.error('dashboard.bandejaResumen:', err.message)
+    return error(res, 500, 'Error al obtener resumen de bandeja')
+  }
+}
+
+module.exports = { kpis, serviciosStats, alertasSla, bandejaResumen, };
