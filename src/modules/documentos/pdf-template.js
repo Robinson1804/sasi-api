@@ -18,6 +18,18 @@ function generarHtmlSolicitud(sol) {
   });
 
   const nombreCompleto = (sol.snap_nombres || '').trim();
+  
+    const incluyeC1Creacion = (sol.servicios || []).some((srv) =>
+    srv.codigo === 'c1' &&
+    srv.datos &&
+    srv.datos.tipoOperacion === 'creacion'
+  );
+
+  const correoInstitucional = sol.snap_correo?.trim()
+    ? sol.snap_correo.trim()
+    : incluyeC1Creacion
+      ? 'A asignar por OTIN'
+      : '—';
 
   // Usuarios masivos (solo para solicitudes masivas)
   const usuariosMasivosHtml = (sol.usuarios_masivos && sol.usuarios_masivos.length > 0)
@@ -84,6 +96,11 @@ function generarHtmlSolicitud(sol) {
         .filter(([k, v]) => {
           if (EXCLUDE_FIELDS.has(k)) return false;
           if (isMasiva && MASIVA_PER_USER_FIELDS.includes(k)) return false;
+
+          if (s.codigo === 'c1' && k === 'internetRedesSociales' && datos.internetPerfil !== '1') {
+            return false;
+          }
+
           // Hide null, undefined, empty string fields
           if (v === null || v === undefined || v === '') return false;
           return true;
@@ -368,8 +385,7 @@ function generarHtmlSolicitud(sol) {
         <tr><td class="label">Vínculo Laboral</td><td class="value">${escapeHtml(sol.snap_vinculo || '—')}</td></tr>
         <tr><td class="label">Oficina</td><td class="value">${escapeHtml(sol.snap_oficina || '—')}</td></tr>
         <tr><td class="label">Sede</td><td class="value">${escapeHtml(sol.snap_sede || '—')}</td></tr>
-        <tr><td class="label">Correo Institucional</td><td class="value">${escapeHtml(sol.snap_correo || '—')}</td></tr>
-        <tr><td class="label">Teléfono / Anexo</td><td class="value">${escapeHtml(sol.snap_telefono || '—')}</td></tr>
+        <tr><td class="label">Correo Institucional</td><td class="value">${escapeHtml(correoInstitucional)}</td></tr>        <tr><td class="label">Teléfono / Anexo</td><td class="value">${escapeHtml(sol.snap_telefono || '—')}</td></tr>
       </table>
     </div>
   </div>
