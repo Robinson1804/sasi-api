@@ -377,8 +377,10 @@ async function crear(data) {
     await client.query('BEGIN')
 
     const { rows: personalRows } = await client.query(
-      `SELECT fecha_fin_contrato
-         FROM personal
+      `SELECT fecha_fin_contrato,
+              correo,
+              tipo_vinculo
+        FROM personal
         WHERE id = $1`,
       [idSolicitante]
     )
@@ -387,9 +389,135 @@ async function crear(data) {
       throw new Error('Personal no encontrado para validar fechas de permiso')
     }
 
-    const fechaFinContrato = personalRows[0].fecha_fin_contrato
+    const personal = personalRows[0]
+    const fechaFinContrato = personal.fecha_fin_contrato
 
     validarFechasPermiso(servicios, fechaFinContrato)
+    validarReglasC1(servicios, personal, tipo, usuariosMasivos)
+
+    function normalizarTexto(value) {
+      return String(value || '')
+        .trim()
+        .toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+    }
+
+    function validarReglasC1(servicios, personal, tipoSolicitud = 'individual', usuariosMasivos = []) {
+      const servicioC1 = servicios.find((srv) => srv.codigoServicio === 'c1')
+      if (!servicioC1) return
+
+      const datos = servicioC1.datos || {}
+      const tipoOperacion = datos.tipoOperacion || 'creacion'
+      const usuarioTieneCorreo = Boolean(String(personal.correo || '').trim())
+      const esCAS = normalizarTexto(personal.tipo_vinculo) === 'CAS'
+
+      const redSolicitar = datos.redSolicitar === true
+      const internetSolicitar = datos.internetSolicitar === true
+      const correoSolicitar = datos.correoSolicitar === true
+
+      if (!['creacion', 'actualizacion'].includes(tipoOperacion)) {
+        throw new Error('C1: tipo de operación inválido')
+      }
+
+      if (tipoSolicitud === 'individual') {
+        if (tipoOperacion === 'creacion' && usuarioTieneCorreo) {
+          throw new Error('C1: El usuario ya cuenta con correo institucional. Debe solicitar una actualización')
+        }
+
+        if (tipoOperacion === 'actualizacion' && !usuarioTieneCorreo) {
+          throw new Error('C1: El usuario aún no tiene correo institucional. Debe solicitar creación')
+        }
+
+        if (tipoOperacion === 'creacion') {
+          if (datos.redTipoCuenta === 'generica') {
+            throw new Error('C1: En creación solo se permite cuenta de red personal')
+          }
+
+          if (correoSolicitar && datos.correoTipo && datos.correoTipo !== 'creacion') {
+            throw new Error('C1: En creación el correo institucional debe ser de tipo creación')
+          }
+        }
+
+        if (tipoOperacion === 'actualizacion') {
+          if (correoSolicitar && datos.correoTipo !== 'aumento') {
+            throw new Error('C1: En actualización solo se permite aumento de capacidad de correo')
+          }
+
+          if (
+            correoSolicitar &&
+            (!datos.correoCapacidad || String(datos.correoCapacidad).trim().length < 2)
+          ) {
+            throw new Error('C1: Debe indicar la nueva capacidad solicitada para el correo')
+          }
+        }
+
+        if (redSolicitar && datos.redTipoCuenta === 'generica' && !esCAS) {
+          throw new Error('C1: La cuenta genérica solo está habilitada para usuarios con vínculo CAS')
+        }
+
+        if (
+          redSolicitar &&
+          datos.redTipoCuenta === 'generica' &&
+          (!datos.redNombreGenerico || String(datos.redNombreGenerico).trim().length < 3)
+        ) {
+          throw new Error('C1: Debe indicar el nombre de la cuenta genérica')
+        }
+
+        if (internetSolicitar) {
+          const perfil = String(datos.internetPerfil || '3')
+
+          if (!['1', '2', '3'].includes(perfil)) {
+            throw new Error('C1: Perfil de Internet inválido')
+          }
+
+          if (
+            (perfil === '1' || perfil === '2') &&
+            (!datos.internetJustificacion || String(datos.internetJustificacion).trim().length < 10)
+          ) {
+            throw new Error('C1: La justificación de Internet es obligatoria para Perfil Intermedio o Avanzado')
+          }
+
+          if (perfil === '1' && !['con', 'sin'].includes(datos.internetRedesSociales)) {
+            throw new Error('C1: Debe indicar si el Perfil Avanzado es con o sin redes sociales')
+          }
+        }
+      }
+
+      if (tipoSolicitud === 'masiva') {
+        for (let i = 0; i < usuariosMasivos.length; i += 1) {
+          const usuario = usuariosMasivos[i]
+          const nombre =
+            `${usuario.nombres || ''} ${usuario.apellidos || ''}`.trim() ||
+            usuario.dni ||
+            `Usuario ${i + 1}`
+
+          const perfil = String(usuario.internetPerfil || '3')
+
+          if (!['1', '2', '3'].includes(perfil)) {
+            throw new Error(`C1: Perfil de Internet inválido para ${nombre}`)
+          }
+
+          if (
+            (perfil === '1' || perfil === '2') &&
+            (!usuario.internetJustificacion || String(usuario.internetJustificacion).trim().length < 10)
+          ) {
+            throw new Error(`C1: ${nombre} requiere justificación de Internet para Perfil Intermedio o Avanzado`)
+          }
+
+          if (perfil === '1' && !['con', 'sin'].includes(usuario.internetRedesSociales || 'sin')) {
+            throw new Error(`C1: ${nombre} debe indicar si el Perfil Avanzado es con o sin redes sociales`)
+          }
+
+          if (
+            usuario.redTipoCuenta === 'generica' &&
+            (!usuario.redNombreGenerico || String(usuario.redNombreGenerico).trim().length < 3)
+          ) {
+            throw new Error(`C1: ${nombre} debe indicar el nombre de la cuenta genérica`)
+          }
+        }
+      }
+    }
 
     // 1. Generar numero
     const { rows: numRows } = await client.query(
