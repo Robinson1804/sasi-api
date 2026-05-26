@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 const { Router } = require('express')
 const { ok, error } = require('../../utils/response')
-const { buscarPorDni, buscarPorNombre, listar } = require('./externos.service')
+const { buscarPorDni, buscarPorNombre, listar, validarParaSolicitud, } = require('./externos.service')
 const { verifyToken } = require('../../middleware/auth')
 
 const router = Router()
@@ -24,6 +24,17 @@ router.get('/personal', (req, res) => {
   } catch (err) {
     console.error('externos.listar:', err)
     return error(res, 500, 'Error al consultar personal externo')
+  }
+})
+
+// GET /api/externos/personal/:dni/validar-solicitud
+router.get('/personal/:dni/validar-solicitud', async (req, res) => {
+  try {
+    const result = await validarParaSolicitud(req.params.dni)
+    return ok(res, result)
+  } catch (err) {
+    console.error('externos.validarParaSolicitud:', err)
+    return error(res, 500, 'Error al validar usuario para solicitud')
   }
 })
 

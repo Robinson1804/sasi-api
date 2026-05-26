@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 const path = require('path')
 const fs = require('fs')
+const { query } = require('../../config/db')
 
 const JSON_PATH = path.resolve(__dirname, '../../../data/personal-rrhh.json')
 
@@ -72,4 +73,152 @@ function recargar() {
   return cargarDatos()
 }
 
-module.exports = { buscarPorDni, buscarPorNombre, listar, recargar }
+function toDateInputValue(value) {
+  if (!value) return null
+
+  if (value instanceof Date) {
+    return value.toISOString().split('T')[0]
+  }
+
+  const str = String(value)
+  if (str.includes('T')) return str.split('T')[0]
+
+  return str
+}
+
+function todayDateOnly() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+function evaluarContrato(fechaFinContrato) {
+  if (!fechaFinContrato) {
+    return {
+      contratoEstado: 'sin_fecha',
+      puedeSolicitar: false,
+      restricciones: ['El usuario no tiene fecha de fin de contrato registrada'],
+    }
+  }
+
+  const fin = new Date(`${toDateInputValue(fechaFinContrato)}T00:00:00`)
+  const hoy = todayDateOnly()
+
+  if (Number.isNaN(fin.getTime())) {
+    return {
+      contratoEstado: 'sin_fecha',
+      puedeSolicitar: false,
+      restricciones: ['La fecha de fin de contrato no es válida'],
+    }
+  }
+
+  if (fin < hoy) {
+    return {
+      contratoEstado: 'vencido',
+      puedeSolicitar: false,
+      restricciones: ['El contrato del usuario se encuentra vencido'],
+    }
+  }
+
+  return {
+    contratoEstado: 'vigente',
+    puedeSolicitar: true,
+    restricciones: [],
+  }
+}
+
+async function validarParaSolicitud(dni) {
+  const dniNorm = String(dni || '').replace(/\D/g, '').padStart(8, '0')
+
+  if (!/^\d{8}$/.test(dniNorm)) {
+    return {
+      dni: dniNorm,
+      puedeSolicitar: false,
+      contratoEstado: 'dni_invalido',
+      restricciones: ['El DNI debe tener 8 dígitos'],
+    }
+  }
+
+  const { rows } = await query(
+    `SELECT p.id,
+            p.dni,
+            p.apellidos,
+            p.nombres,
+            p.tipo_vinculo,
+            p.cargo,
+            p.correo,
+            p.telefono,
+            p.oficina,
+            p.fecha_inicio_contrato,
+            p.fecha_fin_contrato,
+            p.estado,
+            s.nombre AS sede
+       FROM personal p
+       LEFT JOIN sedes s ON s.id = p.id_sede
+      WHERE p.dni = $1
+      LIMIT 1`,
+    [dniNorm],
+  )
+
+  if (rows.length === 0) {
+    const externo = buscarPorDni(dniNorm)
+
+    return {
+      dni: dniNorm,
+      nombres: externo?.nombres || '',
+      apellidos: externo?.apellidos || '',
+      cargo: externo?.cargo || '',
+      tipoVinculo: externo?.tipoVinculo || '',
+      correo: externo?.correo || '',
+      telefono: externo?.celular || '',
+      oficina: externo?.unidad || '',
+      sede: externo?.sede || '',
+      fechaInicioContrato: null,
+      fechaFinContrato: null,
+      contratoEstado: 'sin_registro',
+      puedeSolicitar: false,
+      restricciones: [
+        'El DNI no se encuentra registrado en el sistema SASI o no tiene contrato registrado',
+      ],
+    }
+  }
+
+  const row = rows[0]
+  const contrato = evaluarContrato(row.fecha_fin_contrato)
+
+  const restricciones = [...contrato.restricciones]
+
+  if (row.estado && String(row.estado).toLowerCase() !== 'activo') {
+    restricciones.push(`El usuario se encuentra en estado ${row.estado}`)
+  }
+
+  const puedeSolicitar =
+    contrato.puedeSolicitar &&
+    (!row.estado || String(row.estado).toLowerCase() === 'activo')
+
+  return {
+    idPersonal: row.id,
+    dni: row.dni,
+    nombres: row.nombres,
+    apellidos: row.apellidos,
+    cargo: row.cargo,
+    tipoVinculo: row.tipo_vinculo,
+    correo: row.correo || '',
+    telefono: row.telefono || '',
+    oficina: row.oficina || '',
+    sede: row.sede || '',
+    fechaInicioContrato: toDateInputValue(row.fecha_inicio_contrato),
+    fechaFinContrato: toDateInputValue(row.fecha_fin_contrato),
+    estado: row.estado,
+    contratoEstado: contrato.contratoEstado,
+    puedeSolicitar,
+    restricciones,
+  }
+}
+
+module.exports = {
+  buscarPorDni,
+  buscarPorNombre,
+  listar,
+  recargar,
+  validarParaSolicitud,
+}
