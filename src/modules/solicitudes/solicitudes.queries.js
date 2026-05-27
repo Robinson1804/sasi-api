@@ -70,12 +70,10 @@ async function listar(filters = {}) {
     ? 'WHERE ' + conditions.join(' AND ')
     : ''
 
-  // Contar total
   const countSql = `SELECT COUNT(*) AS total FROM solicitudes s ${where}`
   const { rows: countRows } = await query(countSql, params)
   const total = parseInt(countRows[0].total, 10)
 
-  // Traer solicitudes con servicios agregados
   const dataSql = `
     SELECT s.*,
            COALESCE(
@@ -108,19 +106,19 @@ async function listar(filters = {}) {
 // ========================== OBTENER POR ID =================================
 
 async function obtenerPorId(id) {
-  // 1. Solicitud base
   const { rows: solRows } = await query(
     `SELECT s.*,
-            s.pdf_url    AS pdf_url,
+            s.pdf_url     AS pdf_url,
             s.firmado_url AS firmado_url
        FROM solicitudes s
       WHERE s.id = $1`,
     [id]
   )
+
   if (solRows.length === 0) return null
+
   const solicitud = solRows[0]
 
-  // 2. Servicios
   const { rows: servicios } = await query(
     `SELECT ss.id,
             json_build_object(
@@ -140,7 +138,6 @@ async function obtenerPorId(id) {
     [id]
   )
 
-  // 3. Etapas de aprobacion (flujo unificado por solicitud)
   const { rows: etapaRows } = await query(
     `SELECT ea.id,
             ea.orden,
@@ -158,30 +155,30 @@ async function obtenerPorId(id) {
             ea.vencio_sla,
             COALESCE(ea.sla_horas, cf.sla_horas) AS sla_horas
        FROM etapas_aprobacion ea
-       JOIN roles r            ON r.id  = ea.id_rol
+       JOIN roles r              ON r.id = ea.id_rol
        LEFT JOIN config_flujo cf ON cf.id = ea.id_config
-       LEFT JOIN usuarios ua   ON ua.id = ea.id_aprobador
-       LEFT JOIN personal pa   ON pa.id = ua.id_personal
+       LEFT JOIN usuarios ua     ON ua.id = ea.id_aprobador
+       LEFT JOIN personal pa     ON pa.id = ua.id_personal
       WHERE ea.id_solicitud = $1
       ORDER BY ea.orden`,
     [id]
   )
+
   const etapas = etapaRows.map(e => ({
-    id:                   e.id,
-    orden:                e.orden,
-    rolCodigo:            e.rol_codigo,
-    rolNombre:            e.rol_nombre,
-    estado:               e.estado,
-    aprobadorNombre:      e.aprobador_nombre,
-    comentario:           e.comentario,
-    fechaInicio:          e.fecha_inicio,
-    fechaAccion:          e.fecha_accion,
-    horasTranscurridas:   e.horas_transcurridas,
-    vencioSla:            e.vencio_sla,
-    slaHoras:             e.sla_horas,
+    id:                 e.id,
+    orden:              e.orden,
+    rolCodigo:          e.rol_codigo,
+    rolNombre:          e.rol_nombre,
+    estado:             e.estado,
+    aprobadorNombre:    e.aprobador_nombre,
+    comentario:         e.comentario,
+    fechaInicio:        e.fecha_inicio,
+    fechaAccion:        e.fecha_accion,
+    horasTranscurridas: e.horas_transcurridas,
+    vencioSla:          e.vencio_sla,
+    slaHoras:           e.sla_horas,
   }))
 
-  // 4. Historial
   const { rows: historialRows } = await query(
     `SELECT h.id,
             h.tipo_evento,
@@ -199,51 +196,55 @@ async function obtenerPorId(id) {
       ORDER BY h.created_at ASC`,
     [id]
   )
+
   const historial = historialRows.map(h => ({
-    id:           h.id,
-    tipoEvento:   h.tipo_evento,
-    estadoNuevo:  h.estado_nuevo,
-    comentario:   h.comentario,
+    id:            h.id,
+    tipoEvento:    h.tipo_evento,
+    estadoNuevo:   h.estado_nuevo,
+    comentario:    h.comentario,
     usuarioNombre: h.usuario_nombre,
-    createdAt:    h.created_at,
+    createdAt:     h.created_at,
   }))
 
-  // 5. Si es masiva: hijas
   let solicitudesHijas = []
+
   if (solicitud.tipo === 'masiva') {
-    // Convension: hijas se generan con numero SASI-YYYY-NNNNNN-H01, H02...
-    // y comparten el mismo id_personal o se guardan en usuarios_masivos
     const { rows: hijasRows } = await query(
-      `SELECT s2.id, s2.numero, s2.snap_nombres AS nombre_usuario,
-              s2.snap_dni AS dni, s2.estado
+      `SELECT s2.id,
+              s2.numero,
+              s2.snap_nombres AS nombre_usuario,
+              s2.snap_dni AS dni,
+              s2.estado
          FROM solicitudes s2
         WHERE s2.numero LIKE $1 || '-H%'
         ORDER BY s2.numero`,
       [solicitud.numero]
     )
+
     solicitudesHijas = hijasRows
   }
 
-  // 6. Usuarios masivos (si existe la tabla)
   let usuariosMasivos = []
+
   try {
     const { rows: umRows } = await query(
       `SELECT * FROM usuarios_masivos WHERE id_solicitud = $1 ORDER BY id`,
       [id]
     )
+
     usuariosMasivos = umRows
   } catch (_) {
-    // tabla puede no existir aun en fase 1
+    // La tabla puede no existir en entornos antiguos.
   }
 
   return {
     solicitud,
     servicios: servicios.map(s => ({
-      id:       s.id,
-      servicio: s.servicio,
-      estado:   s.estado,
-      datos:    s.datos,
-      datosAtencion: s.datos_atencion || {},
+      id:             s.id,
+      servicio:       s.servicio,
+      estado:         s.estado,
+      datos:          s.datos,
+      datosAtencion:  s.datos_atencion || {},
     })),
     etapas,
     historial,
@@ -251,6 +252,8 @@ async function obtenerPorId(id) {
     usuariosMasivos,
   }
 }
+
+// ============================== HELPERS ====================================
 
 function parseDateOnly(value) {
   if (!value || typeof value !== 'string') return null
@@ -268,15 +271,58 @@ function formatDatePE(value) {
   if (Number.isNaN(date.getTime())) return ''
 
   return date.toLocaleDateString('es-PE', {
-    day: '2-digit',
+    day:   '2-digit',
     month: '2-digit',
-    year: 'numeric',
+    year:  'numeric',
   })
 }
 
 function todayDateOnly() {
   const now = new Date()
   return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+function normalizarTexto(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+function getServiciosUsuarioMasivo(usuario) {
+  if (!usuario || !Array.isArray(usuario.serviciosSeleccionados)) return []
+
+  return usuario.serviciosSeleccionados.filter((codigo) =>
+    ['c1', 'c4'].includes(codigo)
+  )
+}
+
+function normalizarServiciosSolicitud(tipo, servicios = [], usuariosMasivos = []) {
+  if (tipo !== 'masiva') return servicios
+
+  const serviciosMap = new Map()
+
+  for (const srv of servicios || []) {
+    if (srv?.codigoServicio) {
+      serviciosMap.set(srv.codigoServicio, srv)
+    }
+  }
+
+  for (const usuario of usuariosMasivos || []) {
+    const serviciosUsuario = getServiciosUsuarioMasivo(usuario)
+
+    for (const codigo of serviciosUsuario) {
+      if (!serviciosMap.has(codigo)) {
+        serviciosMap.set(codigo, {
+          codigoServicio: codigo,
+          datos: {},
+        })
+      }
+    }
+  }
+
+  return Array.from(serviciosMap.values())
 }
 
 function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'individual') {
@@ -286,14 +332,13 @@ function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'indi
   for (const srv of servicios) {
     if (!['c4', 'c5', 'c6', 'c7', 'c8', 'c9'].includes(srv.codigoServicio)) continue
 
-    // En solicitud masiva, C4 valida fechas por usuario en usuariosMasivos.
+    // En solicitud masiva, C4 valida fechas por usuario.
     if (tipoSolicitud === 'masiva' && srv.codigoServicio === 'c4') {
       continue
-}
+    }
 
     const datos = srv.datos || {}
 
-    // C8 solo valida fechas cuando el acceso es temporal.
     if (srv.codigoServicio === 'c8' && datos.tipoAcceso !== 'temporal') {
       continue
     }
@@ -334,7 +379,6 @@ function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'indi
       )
     }
 
-    // Validación adicional para usuarios adicionales de C9.
     if (srv.codigoServicio === 'c9' && Array.isArray(datos.usuarios)) {
       for (let i = 0; i < datos.usuarios.length; i += 1) {
         const usuario = datos.usuarios[i]
@@ -342,8 +386,6 @@ function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'indi
         const fechaAlta = parseDateOnly(usuario.fechaAlta)
         const fechaBaja = parseDateOnly(usuario.fechaBaja)
 
-        // Si el usuario adicional no tiene fechas, se omite.
-        // Si llena una, debe llenar ambas.
         if (!usuario.fechaAlta && !usuario.fechaBaja) continue
 
         if (!fechaAlta) {
@@ -372,12 +414,91 @@ function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'indi
   }
 }
 
-async function validarUsuariosMasivosC4(client, servicios, usuariosMasivos = []) {
-  const tieneC4 = servicios.some((srv) => srv.codigoServicio === 'c4')
-  if (!tieneC4) return
+function validarReglasC1(servicios, personal, tipoSolicitud = 'individual') {
+  const servicioC1 = servicios.find((srv) => srv.codigoServicio === 'c1')
+  if (!servicioC1) return
 
+  const datos = servicioC1.datos || {}
+  const tipoOperacion = datos.tipoOperacion || 'creacion'
+  const usuarioTieneCorreo = Boolean(String(personal.correo || '').trim())
+  const esCAS = normalizarTexto(personal.tipo_vinculo) === 'CAS'
+
+  const redSolicitar = datos.redSolicitar === true
+  const internetSolicitar = datos.internetSolicitar === true
+  const correoSolicitar = datos.correoSolicitar === true
+
+  if (!['creacion', 'actualizacion'].includes(tipoOperacion)) {
+    throw new Error('C1: tipo de operación inválido')
+  }
+
+  if (tipoSolicitud !== 'individual') return
+
+  if (tipoOperacion === 'creacion' && usuarioTieneCorreo) {
+    throw new Error('C1: El usuario ya cuenta con correo institucional. Debe solicitar una actualización')
+  }
+
+  if (tipoOperacion === 'actualizacion' && !usuarioTieneCorreo) {
+    throw new Error('C1: El usuario aún no tiene correo institucional. Debe solicitar creación')
+  }
+
+  if (tipoOperacion === 'creacion') {
+    if (datos.redTipoCuenta === 'generica') {
+      throw new Error('C1: En creación solo se permite cuenta de red personal')
+    }
+
+    if (correoSolicitar && datos.correoTipo && datos.correoTipo !== 'creacion') {
+      throw new Error('C1: En creación el correo institucional debe ser de tipo creación')
+    }
+  }
+
+  if (tipoOperacion === 'actualizacion') {
+    if (correoSolicitar && datos.correoTipo !== 'aumento') {
+      throw new Error('C1: En actualización solo se permite aumento de capacidad de correo')
+    }
+
+    if (
+      correoSolicitar &&
+      (!datos.correoCapacidad || String(datos.correoCapacidad).trim().length < 2)
+    ) {
+      throw new Error('C1: Debe indicar la nueva capacidad solicitada para el correo')
+    }
+  }
+
+  if (redSolicitar && datos.redTipoCuenta === 'generica' && !esCAS) {
+    throw new Error('C1: La cuenta genérica solo está habilitada para usuarios con vínculo CAS')
+  }
+
+  if (
+    redSolicitar &&
+    datos.redTipoCuenta === 'generica' &&
+    (!datos.redNombreGenerico || String(datos.redNombreGenerico).trim().length < 3)
+  ) {
+    throw new Error('C1: Debe indicar el nombre de la cuenta genérica')
+  }
+
+  if (internetSolicitar) {
+    const perfil = String(datos.internetPerfil || '3')
+
+    if (!['1', '2', '3'].includes(perfil)) {
+      throw new Error('C1: Perfil de Internet inválido')
+    }
+
+    if (
+      (perfil === '1' || perfil === '2') &&
+      (!datos.internetJustificacion || String(datos.internetJustificacion).trim().length < 10)
+    ) {
+      throw new Error('C1: La justificación de Internet es obligatoria para Perfil Intermedio o Avanzado')
+    }
+
+    if (perfil === '1' && !['con', 'sin'].includes(datos.internetRedesSociales)) {
+      throw new Error('C1: Debe indicar si el Perfil Avanzado es con o sin redes sociales')
+    }
+  }
+}
+
+async function validarUsuariosMasivosPorServicio(client, usuariosMasivos = []) {
   if (!Array.isArray(usuariosMasivos) || usuariosMasivos.length === 0) {
-    throw new Error('C4: La solicitud masiva requiere usuarios para validar VPN')
+    throw new Error('La solicitud grupal requiere al menos un usuario')
   }
 
   const hoy = todayDateOnly()
@@ -391,8 +512,14 @@ async function validarUsuariosMasivosC4(client, servicios, usuariosMasivos = [])
       dni ||
       `Usuario ${i + 1}`
 
+    const serviciosUsuario = getServiciosUsuarioMasivo(usuario)
+
+    if (serviciosUsuario.length === 0) {
+      throw new Error(`${nombre} debe tener al menos un servicio asignado`)
+    }
+
     if (!/^\d{8}$/.test(dni)) {
-      throw new Error(`C4: El DNI de ${nombre} debe tener 8 dígitos`)
+      throw new Error(`El DNI de ${nombre} debe tener 8 dígitos`)
     }
 
     const { rows } = await client.query(
@@ -400,73 +527,126 @@ async function validarUsuariosMasivosC4(client, servicios, usuariosMasivos = [])
               nombres,
               apellidos,
               estado,
+              tipo_vinculo,
+              correo,
               fecha_fin_contrato
          FROM personal
         WHERE dni = $1
         LIMIT 1`,
-      [dni],
+      [dni]
     )
 
     if (rows.length === 0) {
-      throw new Error(`C4: ${nombre} no se encuentra registrado en el sistema`)
+      throw new Error(`${nombre} no se encuentra registrado en el sistema`)
     }
 
     const personal = rows[0]
+
     const contratoDate = personal.fecha_fin_contrato
       ? new Date(personal.fecha_fin_contrato)
       : null
 
     if (!contratoDate || Number.isNaN(contratoDate.getTime())) {
-      throw new Error(`C4: ${nombre} no tiene fecha de fin de contrato registrada`)
+      throw new Error(`${nombre} no tiene fecha de fin de contrato registrada`)
     }
 
     if (contratoDate < hoy) {
-      throw new Error(`C4: El contrato de ${nombre} se encuentra vencido`)
+      throw new Error(`El contrato de ${nombre} se encuentra vencido`)
     }
 
     if (personal.estado && String(personal.estado).toLowerCase() !== 'activo') {
-      throw new Error(`C4: ${nombre} se encuentra en estado ${personal.estado}`)
+      throw new Error(`${nombre} se encuentra en estado ${personal.estado}`)
     }
 
-    if (!String(usuario.correoPersonal || '').trim()) {
-      throw new Error(`C4: ${nombre} debe registrar correo personal`)
+    // C1 — Cuenta de Red / Internet / Correo
+    if (serviciosUsuario.includes('c1')) {
+      const perfil = String(usuario.internetPerfil || '3')
+
+      if (!['1', '2', '3'].includes(perfil)) {
+        throw new Error(`C1: Perfil de Internet inválido para ${nombre}`)
+      }
+
+      if (
+        (perfil === '1' || perfil === '2') &&
+        (!usuario.internetJustificacion ||
+          String(usuario.internetJustificacion).trim().length < 10)
+      ) {
+        throw new Error(
+          `C1: ${nombre} requiere justificación de Internet para Perfil Intermedio o Avanzado`
+        )
+      }
+
+      if (perfil === '1' && !['con', 'sin'].includes(usuario.internetRedesSociales || '')) {
+        throw new Error(
+          `C1: ${nombre} debe indicar si el Perfil Avanzado es con o sin redes sociales`
+        )
+      }
+
+      const esCAS = normalizarTexto(personal.tipo_vinculo) === 'CAS'
+
+      if (usuario.redTipoCuenta === 'generica' && !esCAS) {
+        throw new Error(
+          `C1: ${nombre} no puede solicitar cuenta genérica porque su vínculo no es CAS`
+        )
+      }
+
+      if (
+        usuario.redTipoCuenta === 'generica' &&
+        (!usuario.redNombreGenerico ||
+          String(usuario.redNombreGenerico).trim().length < 3)
+      ) {
+        throw new Error(`C1: ${nombre} debe indicar el nombre de la cuenta genérica`)
+      }
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(usuario.correoPersonal || '').trim())) {
-      throw new Error(`C4: ${nombre} debe registrar un correo personal válido`)
-    }
+    // C4 — Acceso Remoto VPN
+    if (serviciosUsuario.includes('c4')) {
+      if (!String(usuario.correoPersonal || '').trim()) {
+        throw new Error(`C4: ${nombre} debe registrar correo personal`)
+      }
 
-    if (!String(usuario.telefonoContacto || '').trim()) {
-      throw new Error(`C4: ${nombre} debe registrar teléfono de contacto`)
-    }
+      if (
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+          String(usuario.correoPersonal || '').trim()
+        )
+      ) {
+        throw new Error(`C4: ${nombre} debe registrar un correo personal válido`)
+      }
 
-    if (!String(usuario.nombreHost || '').trim()) {
-      throw new Error(`C4: ${nombre} debe registrar el nombre del equipo personal`)
-    }
+      if (!String(usuario.telefonoContacto || '').trim()) {
+        throw new Error(`C4: ${nombre} debe registrar teléfono de contacto`)
+      }
 
-    const fechaInicio = parseDateOnly(usuario.vpnFechaInicio)
-    const fechaFin = parseDateOnly(usuario.vpnFechaFin)
+      if (!String(usuario.nombreHost || '').trim()) {
+        throw new Error(`C4: ${nombre} debe registrar el nombre del equipo personal`)
+      }
 
-    if (!fechaInicio) {
-      throw new Error(`C4: ${nombre} debe registrar fecha de inicio del permiso VPN`)
-    }
+      const fechaInicio = parseDateOnly(usuario.vpnFechaInicio)
+      const fechaFin = parseDateOnly(usuario.vpnFechaFin)
 
-    if (!fechaFin) {
-      throw new Error(`C4: ${nombre} debe registrar fecha de fin del permiso VPN`)
-    }
+      if (!fechaInicio) {
+        throw new Error(`C4: ${nombre} debe registrar fecha de inicio del permiso VPN`)
+      }
 
-    if (fechaInicio < hoy) {
-      throw new Error(`C4: ${nombre} tiene una fecha de inicio menor a hoy`)
-    }
+      if (!fechaFin) {
+        throw new Error(`C4: ${nombre} debe registrar fecha de fin del permiso VPN`)
+      }
 
-    if (fechaFin < fechaInicio) {
-      throw new Error(`C4: ${nombre} tiene una fecha de fin menor a la fecha de inicio`)
-    }
+      if (fechaInicio < hoy) {
+        throw new Error(`C4: ${nombre} tiene una fecha de inicio menor a hoy`)
+      }
 
-    if (fechaFin > contratoDate) {
-      throw new Error(
-        `C4: La fecha fin VPN de ${nombre} no puede superar su fecha de fin de contrato (${formatDatePE(contratoDate)})`,
-      )
+      if (fechaFin < fechaInicio) {
+        throw new Error(
+          `C4: ${nombre} tiene una fecha de fin menor a la fecha de inicio`
+        )
+      }
+
+      if (fechaFin > contratoDate) {
+        throw new Error(
+          `C4: La fecha fin VPN de ${nombre} no puede superar su fecha de fin de contrato (${formatDatePE(contratoDate)})`
+        )
+      }
     }
   }
 }
@@ -474,7 +654,7 @@ async function validarUsuariosMasivosC4(client, servicios, usuariosMasivos = [])
 // =============================== CREAR =====================================
 
 async function crear(data) {
-  const { idSolicitante, tipo = 'individual', servicios, usuariosMasivos } = data
+  const { idSolicitante, tipo = 'individual', servicios = [], usuariosMasivos = [] } = data
   const client = await getClient()
 
   try {
@@ -484,7 +664,7 @@ async function crear(data) {
       `SELECT fecha_fin_contrato,
               correo,
               tipo_vinculo
-        FROM personal
+         FROM personal
         WHERE id = $1`,
       [idSolicitante]
     )
@@ -496,165 +676,56 @@ async function crear(data) {
     const personal = personalRows[0]
     const fechaFinContrato = personal.fecha_fin_contrato
 
-    validarFechasPermiso(servicios, fechaFinContrato, tipo)
-    await validarUsuariosMasivosC4(client, servicios, usuariosMasivos)
-    validarReglasC1(servicios, personal, tipo, usuariosMasivos)
+    const serviciosNormalizados = normalizarServiciosSolicitud(
+      tipo,
+      servicios,
+      usuariosMasivos
+    )
 
-    function normalizarTexto(value) {
-      return String(value || '')
-        .trim()
-        .toUpperCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
+    if (!Array.isArray(serviciosNormalizados) || serviciosNormalizados.length === 0) {
+      throw new Error('Debe seleccionar al menos un servicio')
     }
 
-    function validarReglasC1(servicios, personal, tipoSolicitud = 'individual', usuariosMasivos = []) {
-      const servicioC1 = servicios.find((srv) => srv.codigoServicio === 'c1')
-      if (!servicioC1) return
+    validarFechasPermiso(serviciosNormalizados, fechaFinContrato, tipo)
 
-      const datos = servicioC1.datos || {}
-      const tipoOperacion = datos.tipoOperacion || 'creacion'
-      const usuarioTieneCorreo = Boolean(String(personal.correo || '').trim())
-      const esCAS = normalizarTexto(personal.tipo_vinculo) === 'CAS'
-
-      const redSolicitar = datos.redSolicitar === true
-      const internetSolicitar = datos.internetSolicitar === true
-      const correoSolicitar = datos.correoSolicitar === true
-
-      if (!['creacion', 'actualizacion'].includes(tipoOperacion)) {
-        throw new Error('C1: tipo de operación inválido')
-      }
-
-      if (tipoSolicitud === 'individual') {
-        if (tipoOperacion === 'creacion' && usuarioTieneCorreo) {
-          throw new Error('C1: El usuario ya cuenta con correo institucional. Debe solicitar una actualización')
-        }
-
-        if (tipoOperacion === 'actualizacion' && !usuarioTieneCorreo) {
-          throw new Error('C1: El usuario aún no tiene correo institucional. Debe solicitar creación')
-        }
-
-        if (tipoOperacion === 'creacion') {
-          if (datos.redTipoCuenta === 'generica') {
-            throw new Error('C1: En creación solo se permite cuenta de red personal')
-          }
-
-          if (correoSolicitar && datos.correoTipo && datos.correoTipo !== 'creacion') {
-            throw new Error('C1: En creación el correo institucional debe ser de tipo creación')
-          }
-        }
-
-        if (tipoOperacion === 'actualizacion') {
-          if (correoSolicitar && datos.correoTipo !== 'aumento') {
-            throw new Error('C1: En actualización solo se permite aumento de capacidad de correo')
-          }
-
-          if (
-            correoSolicitar &&
-            (!datos.correoCapacidad || String(datos.correoCapacidad).trim().length < 2)
-          ) {
-            throw new Error('C1: Debe indicar la nueva capacidad solicitada para el correo')
-          }
-        }
-
-        if (redSolicitar && datos.redTipoCuenta === 'generica' && !esCAS) {
-          throw new Error('C1: La cuenta genérica solo está habilitada para usuarios con vínculo CAS')
-        }
-
-        if (
-          redSolicitar &&
-          datos.redTipoCuenta === 'generica' &&
-          (!datos.redNombreGenerico || String(datos.redNombreGenerico).trim().length < 3)
-        ) {
-          throw new Error('C1: Debe indicar el nombre de la cuenta genérica')
-        }
-
-        if (internetSolicitar) {
-          const perfil = String(datos.internetPerfil || '3')
-
-          if (!['1', '2', '3'].includes(perfil)) {
-            throw new Error('C1: Perfil de Internet inválido')
-          }
-
-          if (
-            (perfil === '1' || perfil === '2') &&
-            (!datos.internetJustificacion || String(datos.internetJustificacion).trim().length < 10)
-          ) {
-            throw new Error('C1: La justificación de Internet es obligatoria para Perfil Intermedio o Avanzado')
-          }
-
-          if (perfil === '1' && !['con', 'sin'].includes(datos.internetRedesSociales)) {
-            throw new Error('C1: Debe indicar si el Perfil Avanzado es con o sin redes sociales')
-          }
-        }
-      }
-
-      if (tipoSolicitud === 'masiva') {
-        for (let i = 0; i < usuariosMasivos.length; i += 1) {
-          const usuario = usuariosMasivos[i]
-          const nombre =
-            `${usuario.nombres || ''} ${usuario.apellidos || ''}`.trim() ||
-            usuario.dni ||
-            `Usuario ${i + 1}`
-
-          const perfil = String(usuario.internetPerfil || '3')
-
-          if (!['1', '2', '3'].includes(perfil)) {
-            throw new Error(`C1: Perfil de Internet inválido para ${nombre}`)
-          }
-
-          if (
-            (perfil === '1' || perfil === '2') &&
-            (!usuario.internetJustificacion || String(usuario.internetJustificacion).trim().length < 10)
-          ) {
-            throw new Error(`C1: ${nombre} requiere justificación de Internet para Perfil Intermedio o Avanzado`)
-          }
-
-          if (perfil === '1' && !['con', 'sin'].includes(usuario.internetRedesSociales || 'sin')) {
-            throw new Error(`C1: ${nombre} debe indicar si el Perfil Avanzado es con o sin redes sociales`)
-          }
-
-          if (
-            usuario.redTipoCuenta === 'generica' &&
-            (!usuario.redNombreGenerico || String(usuario.redNombreGenerico).trim().length < 3)
-          ) {
-            throw new Error(`C1: ${nombre} debe indicar el nombre de la cuenta genérica`)
-          }
-        }
-      }
+    if (tipo === 'masiva') {
+      await validarUsuariosMasivosPorServicio(client, usuariosMasivos)
+    } else {
+      validarReglasC1(serviciosNormalizados, personal, tipo)
     }
 
-    // 1. Generar numero
     const { rows: numRows } = await client.query(
       `SELECT generar_numero_solicitud() AS numero`
     )
+
     const numero = numRows[0].numero
 
-    // 2. Obtener id_usuario_creador a partir de id_personal
     const { rows: usrRows } = await client.query(
       `SELECT id FROM usuarios WHERE id_personal = $1 AND activo = true LIMIT 1`,
       [idSolicitante]
     )
+
     const idUsuarioCreador = usrRows.length > 0 ? usrRows[0].id : null
 
-    // 3. INSERT solicitud
     const { rows: solRows } = await client.query(
       `INSERT INTO solicitudes (numero, id_solicitante, id_usuario_creador, tipo, estado)
        VALUES ($1, $2, $3, $4, 'borrador')
        RETURNING id, numero`,
       [numero, idSolicitante, idUsuarioCreador, tipo]
     )
+
     const solicitudId = solRows[0].id
 
-    // 4. INSERT solicitud_servicios
-    for (const srv of servicios) {
+    for (const srv of serviciosNormalizados) {
       const { rows: srvRows } = await client.query(
         `SELECT id FROM servicios WHERE codigo = $1 AND activo = true`,
         [srv.codigoServicio]
       )
+
       if (srvRows.length === 0) {
         throw new Error(`Servicio con codigo '${srv.codigoServicio}' no encontrado`)
       }
+
       await client.query(
         `INSERT INTO solicitud_servicios (id_solicitud, id_servicio, datos)
          VALUES ($1, $2, $3)`,
@@ -662,24 +733,80 @@ async function crear(data) {
       )
     }
 
-    // 5. Si masiva: INSERT usuarios_masivos (si la tabla existe)
+    if (tipo === 'masiva') {
+      await client.query(
+        `ALTER TABLE usuarios_masivos
+           ADD COLUMN IF NOT EXISTS servicios_solicitados jsonb DEFAULT '[]'::jsonb`
+      )
+
+      await client.query(
+        `ALTER TABLE usuarios_masivos
+           ADD COLUMN IF NOT EXISTS datos_servicios jsonb DEFAULT '{}'::jsonb`
+      )
+    }
+
     if (tipo === 'masiva' && Array.isArray(usuariosMasivos) && usuariosMasivos.length > 0) {
       for (const um of usuariosMasivos) {
+        const serviciosUsuario = getServiciosUsuarioMasivo(um)
+
         await client.query(
           `INSERT INTO usuarios_masivos
-           (id_solicitud, dni, apellidos, nombres, cargo, internet_perfil, correo_personal, telefono_contacto, nombre_host, tipo_cuenta, correo_institucional)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+           (
+             id_solicitud,
+             dni,
+             apellidos,
+             nombres,
+             cargo,
+             internet_perfil,
+             correo_personal,
+             telefono_contacto,
+             nombre_host,
+             tipo_cuenta,
+             correo_institucional,
+             servicios_solicitados,
+             datos_servicios
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)`,
           [
-            solicitudId, um.dni, um.apellidos, um.nombres, um.cargo,
-            um.internetPerfil || null, um.correoPersonal || null,
-            um.telefonoContacto || null, um.nombreHost || null,
-            um.redTipoCuenta || 'personal', um.correoInstitucional || false,
+            solicitudId,
+            um.dni,
+            um.apellidos,
+            um.nombres,
+            um.cargo,
+            serviciosUsuario.includes('c1') ? um.internetPerfil || '3' : null,
+            serviciosUsuario.includes('c4') ? um.correoPersonal || null : null,
+            serviciosUsuario.includes('c4') ? um.telefonoContacto || null : null,
+            serviciosUsuario.includes('c4') ? um.nombreHost || null : null,
+            serviciosUsuario.includes('c1') ? um.redTipoCuenta || 'personal' : null,
+            serviciosUsuario.includes('c1') ? Boolean(um.correoInstitucional) : false,
+            JSON.stringify(serviciosUsuario),
+            JSON.stringify({
+              serviciosSeleccionados: serviciosUsuario,
+              c1: serviciosUsuario.includes('c1')
+                ? {
+                    internetPerfil: usuarioValue(um.internetPerfil, '3'),
+                    internetJustificacion: usuarioValue(um.internetJustificacion, ''),
+                    internetRedesSociales: usuarioValue(um.internetRedesSociales, 'sin'),
+                    redTipoCuenta: usuarioValue(um.redTipoCuenta, 'personal'),
+                    redNombreGenerico: usuarioValue(um.redNombreGenerico, ''),
+                    correoInstitucional: Boolean(um.correoInstitucional),
+                  }
+                : null,
+              c4: serviciosUsuario.includes('c4')
+                ? {
+                    correoPersonal: usuarioValue(um.correoPersonal, ''),
+                    telefonoContacto: usuarioValue(um.telefonoContacto, ''),
+                    nombreHost: usuarioValue(um.nombreHost, ''),
+                    vpnFechaInicio: usuarioValue(um.vpnFechaInicio, ''),
+                    vpnFechaFin: usuarioValue(um.vpnFechaFin, ''),
+                  }
+                : null,
+            }),
           ]
         )
       }
     }
 
-    // 6. INSERT historial — CREACION
     await client.query(
       `INSERT INTO historial (id_solicitud, tipo_evento, estado_nuevo, id_usuario, comentario)
        VALUES ($1, 'CREACION', 'borrador', $2, 'Solicitud creada')`,
@@ -687,6 +814,7 @@ async function crear(data) {
     )
 
     await client.query('COMMIT')
+
     return { id: solicitudId, numero }
   } catch (err) {
     await client.query('ROLLBACK')
@@ -694,6 +822,11 @@ async function crear(data) {
   } finally {
     client.release()
   }
+}
+
+function usuarioValue(value, fallback) {
+  if (value === null || value === undefined) return fallback
+  return value
 }
 
 // =============================== ENVIAR ====================================
@@ -704,46 +837,55 @@ async function enviar(id, idUsuario) {
   try {
     await client.query('BEGIN')
 
-    // 1. Obtener solicitud — debe estar en borrador
     const { rows: solRows } = await client.query(
       `SELECT * FROM solicitudes WHERE id = $1 FOR UPDATE`,
       [id]
     )
+
     if (solRows.length === 0) throw new Error('Solicitud no encontrada')
+
     const sol = solRows[0]
 
     if (sol.estado !== 'borrador') {
       throw new Error(`No se puede enviar: la solicitud esta en estado '${sol.estado}'`)
     }
 
-    // 2. Obtener datos de personal para snapshot
     const { rows: perRows } = await client.query(
-      `SELECT p.apellidos, p.nombres, p.dni, p.cargo, p.tipo_vinculo,
-              p.correo, p.telefono, p.oficina, s.nombre AS sede
-        FROM personal p
-        LEFT JOIN sedes s ON s.id = p.id_sede
+      `SELECT p.apellidos,
+              p.nombres,
+              p.dni,
+              p.cargo,
+              p.tipo_vinculo,
+              p.correo,
+              p.telefono,
+              p.oficina,
+              s.nombre AS sede
+         FROM personal p
+         LEFT JOIN sedes s ON s.id = p.id_sede
         WHERE p.id = $1`,
       [sol.id_solicitante]
     )
-    if (perRows.length === 0) throw new Error('Personal no encontrado para la solicitud')
-    const per = perRows[0]
 
+    if (perRows.length === 0) {
+      throw new Error('Personal no encontrado para la solicitud')
+    }
+
+    const per = perRows[0]
     const snapNombres = `${per.nombres} ${per.apellidos}`.trim()
 
-    // 3. UPDATE solicitud con snapshot y estado enviada
     await client.query(
       `UPDATE solicitudes
-          SET estado           = 'enviada',
-              fecha_envio      = NOW(),
-              snap_nombres     = $2,
-              snap_dni         = $3,
-              snap_cargo       = $4,
-              snap_vinculo     = $5,
-              snap_correo      = $6,
-              snap_telefono    = $7,
-              snap_oficina     = $8,
-              snap_sede        = $9,
-              updated_at       = NOW()
+          SET estado        = 'enviada',
+              fecha_envio   = NOW(),
+              snap_nombres  = $2,
+              snap_dni      = $3,
+              snap_cargo    = $4,
+              snap_vinculo  = $5,
+              snap_correo   = $6,
+              snap_telefono = $7,
+              snap_oficina  = $8,
+              snap_sede     = $9,
+              updated_at    = NOW()
         WHERE id = $1`,
       [
         id,
@@ -758,10 +900,6 @@ async function enviar(id, idUsuario) {
       ]
     )
 
-    // 4. Servicios quedan en pendiente — las etapas de aprobación se crean
-    // cuando el usuario sube el documento firmado (confirmarFirmado)
-
-    // 5. INSERT historial — ENVIO
     await client.query(
       `INSERT INTO historial
          (id_solicitud, tipo_evento, estado_nuevo, id_usuario, comentario)
@@ -771,11 +909,11 @@ async function enviar(id, idUsuario) {
 
     await client.query('COMMIT')
 
-    // Retornar solicitud actualizada
     const { rows: updated } = await query(
       `SELECT * FROM solicitudes WHERE id = $1`,
       [id]
     )
+
     return updated[0]
   } catch (err) {
     await client.query('ROLLBACK')
@@ -793,30 +931,29 @@ async function cancelar(id, idUsuario, motivo) {
   try {
     await client.query('BEGIN')
 
-    // 1. Obtener solicitud
     const { rows: solRows } = await client.query(
       `SELECT id, estado FROM solicitudes WHERE id = $1 FOR UPDATE`,
       [id]
     )
+
     if (solRows.length === 0) throw new Error('Solicitud no encontrada')
+
     const sol = solRows[0]
 
     if (sol.estado === 'completada' || sol.estado === 'cancelada') {
       throw new Error(`No se puede cancelar: la solicitud esta en estado '${sol.estado}'`)
     }
 
-    // 2. UPDATE solicitud
     await client.query(
       `UPDATE solicitudes
-          SET estado              = 'cancelada',
-              motivo_cancelacion  = $2,
-              fecha_cierre        = NOW(),
-              updated_at          = NOW()
+          SET estado             = 'cancelada',
+              motivo_cancelacion = $2,
+              fecha_cierre       = NOW(),
+              updated_at         = NOW()
         WHERE id = $1`,
       [id, motivo]
     )
 
-    // 3. INSERT historial — CANCELACION
     await client.query(
       `INSERT INTO historial
          (id_solicitud, tipo_evento, estado_nuevo, id_usuario, comentario)
@@ -825,6 +962,7 @@ async function cancelar(id, idUsuario, motivo) {
     )
 
     await client.query('COMMIT')
+
     return { id, estado: 'cancelada' }
   } catch (err) {
     await client.query('ROLLBACK')
@@ -839,30 +977,29 @@ async function cancelar(id, idUsuario, motivo) {
 // ---------------------------------------------------------------------------
 async function confirmarFirmado(id, idUsuario) {
   const client = await getClient()
+
   try {
     await client.query('BEGIN')
 
-    // 1. Verificar solicitud existe y tiene firmado_url
     const { rows } = await client.query(
       `SELECT id, estado, firmado_url FROM solicitudes WHERE id = $1`,
       [id]
     )
+
     if (rows.length === 0) throw new Error('Solicitud no encontrada')
     if (!rows[0].firmado_url) throw new Error('No se ha subido el documento firmado')
 
-    // 2. UPDATE estado a en_proceso
     await client.query(
       `UPDATE solicitudes SET estado = 'en_proceso', updated_at = NOW() WHERE id = $1`,
       [id]
     )
 
-    // 3. Crear flujo de aprobación UNIFICADO desde config_flujo activo
-    // Importante: NO deduplicar solo por rol, porque soporte_tecnico puede aparecer
-    // dos veces: validación inicial y cierre final.
     const { rows: ssRows } = await client.query(
-      `SELECT ss.id AS ss_id, ss.id_servicio, sv.codigo AS servicio_codigo
-        FROM solicitud_servicios ss
-        JOIN servicios sv ON sv.id = ss.id_servicio
+      `SELECT ss.id AS ss_id,
+              ss.id_servicio,
+              sv.codigo AS servicio_codigo
+         FROM solicitud_servicios ss
+         JOIN servicios sv ON sv.id = ss.id_servicio
         WHERE ss.id_solicitud = $1
         ORDER BY sv.orden`,
       [id]
@@ -873,7 +1010,7 @@ async function confirmarFirmado(id, idUsuario) {
     for (const ss of ssRows) {
       const { rows: flujoRows } = await client.query(
         `SELECT id, orden, id_rol, sla_horas
-          FROM config_flujo
+           FROM config_flujo
           WHERE id_servicio = $1
             AND activo = true
           ORDER BY orden ASC`,
@@ -888,8 +1025,6 @@ async function confirmarFirmado(id, idUsuario) {
       }
     }
 
-    // Deduplicar por posición lógica del flujo, no solo por rol.
-    // Así se conserva soporte_tecnico en orden 0 y soporte_tecnico en orden 3.
     const etapaMap = new Map()
 
     for (const paso of allPasos) {
@@ -910,8 +1045,6 @@ async function confirmarFirmado(id, idUsuario) {
       throw new Error('No existe flujo activo configurado para los servicios de la solicitud')
     }
 
-    // Crear etapas: respetar orden desde config_flujo.
-    // La primera etapa por menor orden queda en revisión.
     let primera = true
 
     for (const paso of pasosUnificados) {
@@ -927,15 +1060,16 @@ async function confirmarFirmado(id, idUsuario) {
       primera = false
     }
 
-    // Marcar servicios como en_revision
     for (const ss of ssRows) {
       await client.query(
-        `UPDATE solicitud_servicios SET estado = 'en_revision', updated_at = NOW() WHERE id = $1`,
+        `UPDATE solicitud_servicios
+            SET estado = 'en_revision',
+                updated_at = NOW()
+          WHERE id = $1`,
         [ss.ss_id]
       )
     }
 
-    // 4. INSERT historial — DOCUMENTO_FIRMADO
     await client.query(
       `INSERT INTO historial
          (id_solicitud, tipo_evento, estado_nuevo, id_usuario, comentario)
@@ -944,6 +1078,7 @@ async function confirmarFirmado(id, idUsuario) {
     )
 
     await client.query('COMMIT')
+
     return { id, estado: 'en_proceso' }
   } catch (err) {
     await client.query('ROLLBACK')
@@ -953,4 +1088,11 @@ async function confirmarFirmado(id, idUsuario) {
   }
 }
 
-module.exports = { listar, obtenerPorId, crear, enviar, cancelar, confirmarFirmado }
+module.exports = {
+  listar,
+  obtenerPorId,
+  crear,
+  enviar,
+  cancelar,
+  confirmarFirmado,
+}

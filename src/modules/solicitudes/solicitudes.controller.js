@@ -76,26 +76,66 @@ async function obtenerPorId(req, res) {
 async function crear(req, res) {
   try {
     const { tipo, servicios, usuariosMasivos } = req.body
+    const esMasiva = tipo === 'masiva'
 
-    // Validaciones basicas
-    if (!servicios || !Array.isArray(servicios) || servicios.length === 0) {
+    let serviciosNormalizados = Array.isArray(servicios) ? servicios : []
+
+    if (esMasiva) {
+      if (!Array.isArray(usuariosMasivos) || usuariosMasivos.length === 0) {
+        return error(res, 400, 'Una solicitud grupal requiere al menos un usuario')
+      }
+
+      const codigosServicios = new Set()
+
+      for (let i = 0; i < usuariosMasivos.length; i += 1) {
+        const usuario = usuariosMasivos[i] || {}
+        const nombre =
+          `${usuario.nombres || ''} ${usuario.apellidos || ''}`.trim() ||
+          usuario.dni ||
+          `Usuario ${i + 1}`
+
+        const serviciosUsuario = Array.isArray(usuario.serviciosSeleccionados)
+          ? usuario.serviciosSeleccionados.filter((codigo) => ['c1', 'c4'].includes(codigo))
+          : []
+
+        if (serviciosUsuario.length === 0) {
+          return error(res, 400, `${nombre} debe tener al menos un servicio asignado`)
+        }
+
+        serviciosUsuario.forEach((codigo) => codigosServicios.add(codigo))
+      }
+
+      serviciosNormalizados = Array.from(codigosServicios).map((codigoServicio) => {
+        const servicioExistente = serviciosNormalizados.find(
+          (srv) => srv.codigoServicio === codigoServicio,
+        )
+
+        return servicioExistente || {
+          codigoServicio,
+          datos: {},
+        }
+      })
+    }
+
+    // Validaciones básicas para individual o servicios derivados de masiva.
+    if (
+      !serviciosNormalizados ||
+      !Array.isArray(serviciosNormalizados) ||
+      serviciosNormalizados.length === 0
+    ) {
       return error(res, 400, 'Debe seleccionar al menos un servicio')
     }
 
-    for (const srv of servicios) {
+    for (const srv of serviciosNormalizados) {
       if (!srv.codigoServicio) {
         return error(res, 400, 'Cada servicio debe tener un codigoServicio')
       }
     }
 
-    if (tipo === 'masiva' && (!usuariosMasivos || usuariosMasivos.length === 0)) {
-      return error(res, 400, 'Una solicitud masiva requiere al menos un usuario')
-    }
-
     const result = await queries.crear({
       idSolicitante: req.user.idPersonal,
       tipo: tipo || 'individual',
-      servicios,
+      servicios: serviciosNormalizados,
       usuariosMasivos,
     })
 
@@ -106,8 +146,18 @@ async function crear(req, res) {
       'solicitudes',
       String(result.id),
       null,
-      { numero: result.numero, tipo, servicios },
-      req.ip
+      {
+        numero: result.numero,
+        tipo,
+        servicios: serviciosNormalizados,
+        usuariosMasivos: esMasiva
+          ? usuariosMasivos.map((u) => ({
+              dni: u.dni,
+              serviciosSeleccionados: u.serviciosSeleccionados || [],
+            }))
+          : undefined,
+      },
+      req.ip,
     )
 
     return created(res, result)
@@ -115,10 +165,11 @@ async function crear(req, res) {
     console.error('solicitudes.crear:', err)
 
     const message = err.message || ''
+    const messageLower = message.toLowerCase()
 
     const validationMessages = [
-      'C1:',
-      'C4:',
+      'c1:',
+      'c4:',
       'fecha de inicio',
       'fecha de fin',
       'fecha de alta',
@@ -127,21 +178,24 @@ async function crear(req, res) {
       'fecha de fin de contrato',
       'correo personal',
       'teléfono',
+      'telefono',
       'contrato',
       'dni',
       'personal no encontrado',
       'servicio con codigo',
       'servicio con código',
+      'debe tener al menos un servicio',
+      'solicitud grupal',
     ]
 
     const isValidationError = validationMessages.some((msg) =>
-      message.toLowerCase().includes(msg)
+      messageLower.includes(msg),
     )
 
     return error(
       res,
       isValidationError ? 400 : 500,
-      isValidationError ? message : 'Error al crear la solicitud'
+      isValidationError ? message : 'Error al crear la solicitud',
     )
   }
 }
