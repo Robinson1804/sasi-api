@@ -9,10 +9,24 @@ const SQL_INSERT = `
 `;
 
 async function registrarDocumento(data) {
-  const { id_solicitud, tipo, nombre_archivo, url, tamano_bytes, id_usuario_subio } = data;
+  const {
+    id_solicitud,
+    tipo,
+    nombre_archivo,
+    url,
+    tamano_bytes,
+    id_usuario_subio,
+  } = data;
+
   const { rows } = await query(SQL_INSERT, [
-    id_solicitud, tipo, nombre_archivo, url, tamano_bytes, id_usuario_subio,
+    id_solicitud,
+    tipo,
+    nombre_archivo,
+    url,
+    tamano_bytes,
+    id_usuario_subio,
   ]);
+
   return rows[0];
 }
 
@@ -26,7 +40,8 @@ async function obtenerPorId(id) {
 }
 
 const SQL_POR_SOLICITUD = `
-  SELECT * FROM documentos
+  SELECT *
+    FROM documentos
    WHERE id_solicitud = $1
    ORDER BY created_at DESC
 `;
@@ -53,7 +68,9 @@ async function actualizarFirmadoUrl(solicitudId, firmadoUrl) {
 /* ── Auxiliar: datos de solicitud para PDF ──────────────── */
 
 const SQL_SOLICITUD_DATOS = `
-  SELECT s.id, s.numero, s.tipo,
+  SELECT s.id,
+         s.numero,
+         s.tipo,
          COALESCE(s.snap_nombres, p.nombres || ' ' || p.apellidos) AS snap_nombres,
          COALESCE(s.snap_dni, p.dni) AS snap_dni,
          COALESCE(s.snap_cargo, p.cargo) AS snap_cargo,
@@ -62,26 +79,52 @@ const SQL_SOLICITUD_DATOS = `
          COALESCE(s.snap_oficina, p.oficina) AS snap_oficina,
          COALESCE(s.snap_correo, p.correo) AS snap_correo,
          COALESCE(s.snap_telefono, p.telefono) AS snap_telefono,
-         s.estado, s.fecha_creacion,
-         json_agg(json_build_object(
-           'codigo', sv.codigo,
-           'nombre', sv.nombre,
-           'icono', sv.icono,
-           'datos', ss.datos
-         )) AS servicios
+         s.estado,
+         s.fecha_creacion,
+         COALESCE(
+           json_agg(
+             json_build_object(
+               'codigo', sv.codigo,
+               'nombre', sv.nombre,
+               'icono', sv.icono,
+               'datos', ss.datos
+             )
+             ORDER BY sv.orden
+           ) FILTER (WHERE sv.id IS NOT NULL),
+           '[]'::json
+         ) AS servicios
     FROM solicitudes s
     LEFT JOIN personal p             ON p.id = s.id_solicitante
     LEFT JOIN sedes se               ON se.id = p.id_sede
     LEFT JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
     LEFT JOIN servicios sv           ON sv.id = ss.id_servicio
    WHERE s.id = $1
-   GROUP BY s.id, p.nombres, p.apellidos, p.dni, p.cargo, p.tipo_vinculo, se.nombre, p.oficina, p.correo, p.telefono
+   GROUP BY s.id,
+            p.nombres,
+            p.apellidos,
+            p.dni,
+            p.cargo,
+            p.tipo_vinculo,
+            se.nombre,
+            p.oficina,
+            p.correo,
+            p.telefono
 `;
 
 const SQL_USUARIOS_MASIVOS = `
-  SELECT dni, nombres, apellidos, cargo, internet_perfil,
-         correo_personal, telefono_contacto, nombre_host,
-         tipo_cuenta, correo_institucional
+  SELECT id,
+         dni,
+         nombres,
+         apellidos,
+         cargo,
+         internet_perfil,
+         correo_personal,
+         telefono_contacto,
+         nombre_host,
+         tipo_cuenta,
+         correo_institucional,
+         COALESCE(servicios_solicitados, '[]'::jsonb) AS servicios_solicitados,
+         COALESCE(datos_servicios, '{}'::jsonb) AS datos_servicios
     FROM usuarios_masivos
    WHERE id_solicitud = $1
    ORDER BY id
@@ -90,10 +133,60 @@ const SQL_USUARIOS_MASIVOS = `
 async function obtenerDatosSolicitud(solicitudId) {
   const { rows } = await query(SQL_SOLICITUD_DATOS, [solicitudId]);
   const sol = rows[0] || null;
+
   if (sol && sol.tipo === 'masiva') {
-    const { rows: umRows } = await query(SQL_USUARIOS_MASIVOS, [solicitudId]);
-    sol.usuarios_masivos = umRows;
+    try {
+      const { rows: umRows } = await query(SQL_USUARIOS_MASIVOS, [solicitudId]);
+
+      sol.usuarios_masivos = umRows.map((u) => ({
+        ...u,
+        servicios_solicitados: Array.isArray(u.servicios_solicitados)
+          ? u.servicios_solicitados
+          : [],
+        datos_servicios:
+          u.datos_servicios && typeof u.datos_servicios === 'object'
+            ? u.datos_servicios
+            : {},
+      }));
+    } catch (err) {
+      // Compatibilidad con bases antiguas que aún no tienen las columnas nuevas.
+      const { rows: legacyRows } = await query(
+        `SELECT dni,
+                nombres,
+                apellidos,
+                cargo,
+                internet_perfil,
+                correo_personal,
+                telefono_contacto,
+                nombre_host,
+                tipo_cuenta,
+                correo_institucional
+           FROM usuarios_masivos
+          WHERE id_solicitud = $1
+          ORDER BY id`,
+        [solicitudId],
+      );
+
+      sol.usuarios_masivos = legacyRows.map((u) => {
+        const servicios = [];
+
+        if (u.internet_perfil || u.tipo_cuenta || u.correo_institucional) {
+          servicios.push('c1');
+        }
+
+        if (u.correo_personal || u.telefono_contacto || u.nombre_host) {
+          servicios.push('c4');
+        }
+
+        return {
+          ...u,
+          servicios_solicitados: servicios,
+          datos_servicios: {},
+        };
+      });
+    }
   }
+
   return sol;
 }
 

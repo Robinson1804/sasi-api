@@ -605,6 +605,14 @@ async function validarUsuariosMasivosPorServicio(client, usuariosMasivos = []) {
         throw new Error(`C4: ${nombre} debe registrar correo personal`)
       }
 
+      if (!String(usuario.vpnJustificacion || '').trim()) {
+        throw new Error(`C4: ${nombre} debe registrar la justificación del acceso VPN`)
+      }
+
+      if (String(usuario.vpnJustificacion || '').trim().length < 10) {
+        throw new Error(`C4: ${nombre} debe registrar una justificación VPN de al menos 10 caracteres`)
+      }
+
       if (
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
           String(usuario.correoPersonal || '').trim()
@@ -797,6 +805,7 @@ async function crear(data) {
                     correoPersonal: usuarioValue(um.correoPersonal, ''),
                     telefonoContacto: usuarioValue(um.telefonoContacto, ''),
                     nombreHost: usuarioValue(um.nombreHost, ''),
+                    vpnJustificacion: usuarioValue(um.vpnJustificacion, ''),
                     vpnFechaInicio: usuarioValue(um.vpnFechaInicio, ''),
                     vpnFechaFin: usuarioValue(um.vpnFechaFin, ''),
                   }
