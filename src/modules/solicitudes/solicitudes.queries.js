@@ -279,12 +279,17 @@ function todayDateOnly() {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate())
 }
 
-function validarFechasPermiso(servicios, fechaFinContrato) {
+function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'individual') {
   const contratoDate = fechaFinContrato ? new Date(fechaFinContrato) : null
   const hoy = todayDateOnly()
 
   for (const srv of servicios) {
     if (!['c4', 'c5', 'c6', 'c7', 'c8', 'c9'].includes(srv.codigoServicio)) continue
+
+    // En solicitud masiva, C4 valida fechas por usuario en usuariosMasivos.
+    if (tipoSolicitud === 'masiva' && srv.codigoServicio === 'c4') {
+      continue
+}
 
     const datos = srv.datos || {}
 
@@ -367,6 +372,105 @@ function validarFechasPermiso(servicios, fechaFinContrato) {
   }
 }
 
+async function validarUsuariosMasivosC4(client, servicios, usuariosMasivos = []) {
+  const tieneC4 = servicios.some((srv) => srv.codigoServicio === 'c4')
+  if (!tieneC4) return
+
+  if (!Array.isArray(usuariosMasivos) || usuariosMasivos.length === 0) {
+    throw new Error('C4: La solicitud masiva requiere usuarios para validar VPN')
+  }
+
+  const hoy = todayDateOnly()
+
+  for (let i = 0; i < usuariosMasivos.length; i += 1) {
+    const usuario = usuariosMasivos[i] || {}
+
+    const dni = String(usuario.dni || '').replace(/\D/g, '')
+    const nombre =
+      `${usuario.nombres || ''} ${usuario.apellidos || ''}`.trim() ||
+      dni ||
+      `Usuario ${i + 1}`
+
+    if (!/^\d{8}$/.test(dni)) {
+      throw new Error(`C4: El DNI de ${nombre} debe tener 8 dígitos`)
+    }
+
+    const { rows } = await client.query(
+      `SELECT dni,
+              nombres,
+              apellidos,
+              estado,
+              fecha_fin_contrato
+         FROM personal
+        WHERE dni = $1
+        LIMIT 1`,
+      [dni],
+    )
+
+    if (rows.length === 0) {
+      throw new Error(`C4: ${nombre} no se encuentra registrado en el sistema`)
+    }
+
+    const personal = rows[0]
+    const contratoDate = personal.fecha_fin_contrato
+      ? new Date(personal.fecha_fin_contrato)
+      : null
+
+    if (!contratoDate || Number.isNaN(contratoDate.getTime())) {
+      throw new Error(`C4: ${nombre} no tiene fecha de fin de contrato registrada`)
+    }
+
+    if (contratoDate < hoy) {
+      throw new Error(`C4: El contrato de ${nombre} se encuentra vencido`)
+    }
+
+    if (personal.estado && String(personal.estado).toLowerCase() !== 'activo') {
+      throw new Error(`C4: ${nombre} se encuentra en estado ${personal.estado}`)
+    }
+
+    if (!String(usuario.correoPersonal || '').trim()) {
+      throw new Error(`C4: ${nombre} debe registrar correo personal`)
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(usuario.correoPersonal || '').trim())) {
+      throw new Error(`C4: ${nombre} debe registrar un correo personal válido`)
+    }
+
+    if (!String(usuario.telefonoContacto || '').trim()) {
+      throw new Error(`C4: ${nombre} debe registrar teléfono de contacto`)
+    }
+
+    if (!String(usuario.nombreHost || '').trim()) {
+      throw new Error(`C4: ${nombre} debe registrar el nombre del equipo personal`)
+    }
+
+    const fechaInicio = parseDateOnly(usuario.vpnFechaInicio)
+    const fechaFin = parseDateOnly(usuario.vpnFechaFin)
+
+    if (!fechaInicio) {
+      throw new Error(`C4: ${nombre} debe registrar fecha de inicio del permiso VPN`)
+    }
+
+    if (!fechaFin) {
+      throw new Error(`C4: ${nombre} debe registrar fecha de fin del permiso VPN`)
+    }
+
+    if (fechaInicio < hoy) {
+      throw new Error(`C4: ${nombre} tiene una fecha de inicio menor a hoy`)
+    }
+
+    if (fechaFin < fechaInicio) {
+      throw new Error(`C4: ${nombre} tiene una fecha de fin menor a la fecha de inicio`)
+    }
+
+    if (fechaFin > contratoDate) {
+      throw new Error(
+        `C4: La fecha fin VPN de ${nombre} no puede superar su fecha de fin de contrato (${formatDatePE(contratoDate)})`,
+      )
+    }
+  }
+}
+
 // =============================== CREAR =====================================
 
 async function crear(data) {
@@ -392,7 +496,8 @@ async function crear(data) {
     const personal = personalRows[0]
     const fechaFinContrato = personal.fecha_fin_contrato
 
-    validarFechasPermiso(servicios, fechaFinContrato)
+    validarFechasPermiso(servicios, fechaFinContrato, tipo)
+    await validarUsuariosMasivosC4(client, servicios, usuariosMasivos)
     validarReglasC1(servicios, personal, tipo, usuariosMasivos)
 
     function normalizarTexto(value) {

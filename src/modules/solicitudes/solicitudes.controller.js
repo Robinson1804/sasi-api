@@ -117,12 +117,18 @@ async function crear(req, res) {
     const message = err.message || ''
 
     const validationMessages = [
+      'C1:',
+      'C4:',
       'fecha de inicio',
       'fecha de fin',
       'fecha de alta',
       'fecha de baja',
       'fecha de fin del permiso',
       'fecha de fin de contrato',
+      'correo personal',
+      'teléfono',
+      'contrato',
+      'dni',
       'personal no encontrado',
       'servicio con codigo',
       'servicio con código',
