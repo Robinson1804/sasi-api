@@ -1,18 +1,71 @@
 const { query } = require('../../config/db')
 
-// Servicios asignados: de solicitudes completadas/atendidas del usuario
+// Servicios asignados: solicitudes individuales + solicitudes grupales donde el usuario fue beneficiario.
 const SQL_SERVICIOS_ASIGNADOS = `
-  SELECT DISTINCT ON (sv.codigo)
-         sv.codigo, sv.nombre, sv.icono, sv.color,
-         ss.estado AS estado_servicio,
-         ss.datos,
-         s.fecha_creacion
-    FROM solicitud_servicios ss
-    JOIN solicitudes s ON ss.id_solicitud = s.id
-    JOIN servicios sv ON ss.id_servicio = sv.id
-   WHERE s.id_solicitante = $1
-     AND ss.estado IN ('atendido', 'aprobado')
-   ORDER BY sv.codigo, s.fecha_creacion DESC
+  WITH persona AS (
+    SELECT id, dni
+      FROM personal
+     WHERE id = $1
+  ),
+
+  servicios_individuales AS (
+    SELECT
+           sv.codigo,
+           sv.nombre,
+           sv.icono,
+           sv.color,
+           ss.estado AS estado_servicio,
+           ss.datos,
+           ss.datos_atencion,
+           s.fecha_creacion
+      FROM persona p
+      JOIN solicitudes s ON s.id_solicitante = p.id
+      JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
+      JOIN servicios sv ON ss.id_servicio = sv.id
+     WHERE ss.estado IN ('atendido', 'aprobado')
+       AND s.estado IN ('completada', 'en_proceso')
+  ),
+
+  servicios_masivos AS (
+    SELECT
+           sv.codigo,
+           sv.nombre,
+           sv.icono,
+           sv.color,
+           COALESCE(
+             um.datos_servicios->sv.codigo->>'estado',
+             'aprobado'
+           ) AS estado_servicio,
+           um.datos_servicios->sv.codigo AS datos,
+           um.datos_servicios->sv.codigo->'datosAtencion' AS datos_atencion,
+           s.fecha_creacion
+      FROM persona p
+      JOIN usuarios_masivos um ON um.dni = p.dni
+      JOIN solicitudes s ON s.id = um.id_solicitud
+      JOIN servicios sv ON sv.codigo IN ('c1', 'c4')
+     WHERE s.tipo = 'masiva'
+       AND s.estado = 'completada'
+       AND um.datos_servicios ? sv.codigo
+       AND COALESCE(um.datos_servicios->sv.codigo->>'estado', '') IN ('aprobado', 'atendido')
+  ),
+
+  servicios_unificados AS (
+    SELECT * FROM servicios_individuales
+    UNION ALL
+    SELECT * FROM servicios_masivos
+  )
+
+  SELECT DISTINCT ON (codigo)
+         codigo,
+         nombre,
+         icono,
+         color,
+         estado_servicio,
+         datos,
+         datos_atencion,
+         fecha_creacion
+    FROM servicios_unificados
+   ORDER BY codigo, fecha_creacion DESC
 `
 
 async function obtenerServiciosAsignados(idPersonal) {
