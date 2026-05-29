@@ -30,6 +30,7 @@ function mapSolicitudRow(row) {
     firmadoUrl:         row.firmado_url || null,
     // Servicios agregados (si la query lo incluye)
     servicios:          row.servicios || undefined,
+    resumenMasivo:      row.resumen_masivo || null,
   }
 }
 

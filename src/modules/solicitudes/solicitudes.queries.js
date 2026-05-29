@@ -75,26 +75,77 @@ async function listar(filters = {}) {
   const total = parseInt(countRows[0].total, 10)
 
   const dataSql = `
+    WITH resumen_masivo AS (
+      SELECT
+        um.id_solicitud,
+        COUNT(*) AS total_usuarios,
+        COALESCE(
+          SUM(
+            (
+              SELECT COUNT(*)
+              FROM jsonb_each(um.datos_servicios) AS item(codigo, data)
+              WHERE item.codigo IN ('c1', 'c4')
+                AND item.data->>'estado' = 'aprobado'
+            )
+          ),
+          0
+        ) AS aprobados,
+        COALESCE(
+          SUM(
+            (
+              SELECT COUNT(*)
+              FROM jsonb_each(um.datos_servicios) AS item(codigo, data)
+              WHERE item.codigo IN ('c1', 'c4')
+                AND item.data->>'estado' = 'observado'
+            )
+          ),
+          0
+        ) AS observados,
+        COALESCE(
+          SUM(
+            (
+              SELECT COUNT(*)
+              FROM jsonb_each(um.datos_servicios) AS item(codigo, data)
+              WHERE item.codigo IN ('c1', 'c4')
+                AND item.data->>'estado' = 'rechazado'
+            )
+          ),
+          0
+        ) AS rechazados
+      FROM usuarios_masivos um
+      GROUP BY um.id_solicitud
+    )
     SELECT s.*,
-           COALESCE(
-             json_agg(
-               json_build_object(
-                 'codigo', sv.codigo,
-                 'nombre', sv.nombre,
-                 'icono',  sv.icono,
-                 'color',  sv.color,
-                 'estado', ss.estado
-               )
-             ) FILTER (WHERE sv.id IS NOT NULL),
-             '[]'
-           ) AS servicios
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'codigo', sv.codigo,
+                'nombre', sv.nombre,
+                'icono',  sv.icono,
+                'color',  sv.color,
+                'estado', ss.estado
+              )
+            ) FILTER (WHERE sv.id IS NOT NULL),
+            '[]'
+          ) AS servicios,
+          CASE
+            WHEN s.tipo = 'masiva' THEN
+              json_build_object(
+                'totalUsuarios', COALESCE(rm.total_usuarios, 0),
+                'aprobados', COALESCE(rm.aprobados, 0),
+                'observados', COALESCE(rm.observados, 0),
+                'rechazados', COALESCE(rm.rechazados, 0)
+              )
+            ELSE NULL
+          END AS resumen_masivo
       FROM solicitudes s
       LEFT JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
       LEFT JOIN servicios sv           ON sv.id = ss.id_servicio
+      LEFT JOIN resumen_masivo rm      ON rm.id_solicitud = s.id
       ${where}
-     GROUP BY s.id
-     ORDER BY s.fecha_creacion DESC
-     LIMIT $${idx++} OFFSET $${idx++}
+    GROUP BY s.id, rm.total_usuarios, rm.aprobados, rm.observados, rm.rechazados
+    ORDER BY s.fecha_creacion DESC
+    LIMIT $${idx++} OFFSET $${idx++}
   `
   params.push(limit, offset)
 
