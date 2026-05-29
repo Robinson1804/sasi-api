@@ -82,7 +82,7 @@ const SQL_LISTAR_OBSERVADAS_SOPORTE = `
 `;
 
 /* ──────────────────────────────────────────────
-   SQL — Helpers usados dentro de la transacción
+   SQL — Helpers transaccionales
    ────────────────────────────────────────────── */
 const SQL_GET_ETAPA = `
   SELECT ea.id, ea.id_solicitud, ea.orden, ea.id_rol,
@@ -205,6 +205,29 @@ const SQL_UPDATE_USUARIO_MASIVO_DATOS_SERVICIOS = `
    WHERE id = $2
 `;
 
+const SQL_GET_PERSONAL_BY_DNI_FOR_UPDATE = `
+  SELECT id, dni, nombres, apellidos, correo, telefono
+    FROM personal
+   WHERE dni = $1
+   FOR UPDATE
+`;
+
+const SQL_GET_PERSONAL_BY_CORREO = `
+  SELECT id, dni, nombres, apellidos, correo
+    FROM personal
+   WHERE LOWER(TRIM(correo)) = LOWER(TRIM($1))
+     AND dni <> $2
+   LIMIT 1
+`;
+
+const SQL_UPDATE_PERSONAL_CORREO_BY_DNI = `
+  UPDATE personal
+     SET correo = $2,
+         updated_at = NOW()
+   WHERE dni = $1
+  RETURNING id, dni, correo
+`;
+
 /* ──────────────────────────────────────────────
    Helpers JS
    ────────────────────────────────────────────── */
@@ -223,11 +246,12 @@ function normalizeJson(value, fallback) {
 function getServiciosSolicitadosUsuario(row) {
   const servicios = normalizeJson(row.servicios_solicitados, []);
 
-  if (Array.isArray(servicios)) {
+  if (Array.isArray(servicios) && servicios.length > 0) {
     return servicios.filter((codigo) => ['c1', 'c4'].includes(codigo));
   }
 
   const datosServicios = normalizeJson(row.datos_servicios, {});
+
   return Object.keys(datosServicios).filter((codigo) =>
     ['c1', 'c4'].includes(codigo),
   );
@@ -251,14 +275,19 @@ function flattenDecisionesMasivas(usuariosMasivosDecisiones) {
 }
 
 function derivarDecisionGlobal(decisiones) {
-  let overallDecision = 'aprobar';
+  const hayAprobados = decisiones.some((d) => d.decision === 'aprobar');
+  const hayObservados = decisiones.some((d) => d.decision === 'observar');
+  const hayRechazados = decisiones.some((d) => d.decision === 'rechazar');
 
-  for (const decision of decisiones) {
-    if (decision.decision === 'rechazar') return 'rechazar';
-    if (decision.decision === 'observar') overallDecision = 'observar';
-  }
+  // En grupales, un rechazo u observación parcial no debe detener
+  // a los usuarios-servicio que sí fueron aprobados.
+  if (hayAprobados) return 'aprobar';
 
-  return overallDecision;
+  if (hayObservados) return 'observar';
+
+  if (hayRechazados) return 'rechazar';
+
+  return 'observar';
 }
 
 function estadoFromDecision(decision) {
@@ -271,19 +300,48 @@ function estadoFromDecision(decision) {
   return map[decision] || 'observado';
 }
 
+function calcularResumenMasivo(decisiones) {
+  const resumen = {
+    aprobados: 0,
+    observados: 0,
+    rechazados: 0,
+  };
+
+  for (const d of decisiones) {
+    if (d.decision === 'aprobar') resumen.aprobados += 1;
+    if (d.decision === 'observar') resumen.observados += 1;
+    if (d.decision === 'rechazar') resumen.rechazados += 1;
+  }
+
+  return resumen;
+}
+
+function buildComentarioResumenMasivo(decisiones, rolCodigo) {
+  const resumen = calcularResumenMasivo(decisiones);
+
+  return [
+    `Revisión masiva registrada por ${rolCodigo}`,
+    `Aprobados: ${resumen.aprobados}`,
+    `Observados: ${resumen.observados}`,
+    `Rechazados: ${resumen.rechazados}`,
+  ].join(' | ');
+}
+
 function buildComentarioMasivo(decisiones, rolCodigo) {
-  const comentarios = decisiones
+  const comentariosDetalle = decisiones
     .filter((d) => String(d.comentario || '').trim())
     .map((d) => {
       const usuario = d.dni || d.usuarioMasivoId || 'usuario';
       return `${usuario} ${String(d.codigo).toUpperCase()}: ${String(d.comentario).trim()}`;
     });
 
-  if (comentarios.length === 0) {
-    return `Revisión masiva registrada por ${rolCodigo}`;
+  const resumen = buildComentarioResumenMasivo(decisiones, rolCodigo);
+
+  if (comentariosDetalle.length === 0) {
+    return resumen;
   }
 
-  return comentarios.join(' | ');
+  return `${resumen} | ${comentariosDetalle.join(' | ')}`;
 }
 
 function mergeDecisionEnDatosServicio({
@@ -357,12 +415,18 @@ function agruparEstadoPorServicio(decisiones) {
   }
 
   return Array.from(porServicio.entries()).map(([codigo, decisionesServicio]) => {
+    const hayAprobados = decisionesServicio.includes('aprobar');
+    const hayObservados = decisionesServicio.includes('observar');
+    const hayRechazados = decisionesServicio.includes('rechazar');
+
     let decisionAgregada = 'aprobar';
 
-    if (decisionesServicio.includes('rechazar')) {
-      decisionAgregada = 'rechazar';
-    } else if (decisionesServicio.includes('observar')) {
+    if (hayAprobados) {
+      decisionAgregada = 'aprobar';
+    } else if (hayObservados) {
       decisionAgregada = 'observar';
+    } else if (hayRechazados) {
+      decisionAgregada = 'rechazar';
     }
 
     return {
@@ -370,6 +434,89 @@ function agruparEstadoPorServicio(decisiones) {
       estado: estadoFromDecision(decisionAgregada),
     };
   });
+}
+
+function getCorreoCreadoFromDecision(sd) {
+  const datosAtencion = sd.datosAtencion || {};
+
+  return String(datosAtencion.correoCreado || '').trim();
+}
+
+async function actualizarCorreoPerfilMasivo({
+  client,
+  usuario,
+  sd,
+  aprobadorId,
+  solicitudId,
+}) {
+  if (sd.codigo !== 'c1') return;
+  if (sd.decision !== 'aprobar') return;
+
+  const correoCreado = getCorreoCreadoFromDecision(sd);
+
+  if (!correoCreado) return;
+
+  const dni = String(usuario.dni || '').trim();
+
+  if (!dni) {
+    throw {
+      status: 400,
+      message: 'No se puede actualizar correo: el usuario masivo no tiene DNI',
+    };
+  }
+
+  const { rows: [personal] } = await client.query(
+    SQL_GET_PERSONAL_BY_DNI_FOR_UPDATE,
+    [dni],
+  );
+
+  if (!personal) {
+    throw {
+      status: 400,
+      message: `No se encontró personal con DNI ${dni} para actualizar correo institucional`,
+    };
+  }
+
+  const { rows: [duplicado] } = await client.query(
+    SQL_GET_PERSONAL_BY_CORREO,
+    [correoCreado, dni],
+  );
+
+  if (duplicado) {
+    throw {
+      status: 409,
+      message: `El correo ${correoCreado} ya está registrado para otro usuario (${duplicado.dni})`,
+    };
+  }
+
+  const correoActual = String(personal.correo || '').trim();
+
+  if (correoActual && correoActual.toLowerCase() !== correoCreado.toLowerCase()) {
+    throw {
+      status: 409,
+      message: `El usuario ${dni} ya tiene correo institucional registrado (${correoActual}). No se sobrescribió con ${correoCreado}`,
+    };
+  }
+
+  if (correoActual.toLowerCase() === correoCreado.toLowerCase()) {
+    return;
+  }
+
+  const { rows: actualizados } = await client.query(
+    SQL_UPDATE_PERSONAL_CORREO_BY_DNI,
+    [dni, correoCreado],
+  );
+
+  if (actualizados.length > 0) {
+    await client.query(SQL_INSERT_HISTORIAL, [
+      solicitudId,
+      null,
+      'APROBACION',
+      'correo_actualizado',
+      `Correo institucional actualizado en perfil para DNI ${dni}: ${correoCreado}`,
+      aprobadorId,
+    ]);
+  }
 }
 
 /* ──────────────────────────────────────────────
@@ -848,6 +995,14 @@ async function decidirMasiva(
           rolCodigo: etapa.rol_codigo,
           aprobadorId,
         });
+
+        await actualizarCorreoPerfilMasivo({
+          client,
+          usuario,
+          sd,
+          aprobadorId,
+          solicitudId,
+        });
       }
 
       await client.query(SQL_UPDATE_USUARIO_MASIVO_DATOS_SERVICIOS, [
@@ -882,6 +1037,7 @@ async function decidirMasiva(
           'atendido',
           solicitudId,
         ]);
+
         await client.query(SQL_UPDATE_SOLICITUD, [
           'completada',
           new Date(),
@@ -903,6 +1059,7 @@ async function decidirMasiva(
         'rechazado',
         solicitudId,
       ]);
+
       await client.query(SQL_UPDATE_SOLICITUD, [
         'rechazada',
         new Date(),
@@ -933,6 +1090,7 @@ async function decidirMasiva(
       numero: solicitud.numero,
       decision: overallDecision,
       modo: 'masiva',
+      resumen: calcularResumenMasivo(decisiones),
     };
   } catch (err) {
     await client.query('ROLLBACK');
