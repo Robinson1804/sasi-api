@@ -44,7 +44,7 @@ const SQL_LISTAR_POR_ROL = `
    WHERE v.rol_codigo = ANY($1)
      AND v.etapa_estado IN ('pendiente', 'en_revision')
    ORDER BY v.fecha_inicio ASC
-`
+`;
 
 const SQL_LISTAR_OBSERVADAS_SOPORTE = `
   SELECT
@@ -79,7 +79,7 @@ const SQL_LISTAR_OBSERVADAS_SOPORTE = `
      AND s.id_solicitud_padre IS NULL
    GROUP BY s.id
    ORDER BY s.updated_at DESC
-`
+`;
 
 /* ──────────────────────────────────────────────
    SQL — Helpers usados dentro de la transacción
@@ -95,12 +95,16 @@ const SQL_GET_ETAPA = `
 
 const SQL_UPDATE_ETAPA = `
   UPDATE etapas_aprobacion
-     SET estado            = $1,
-         id_aprobador      = $2,
-         comentario        = $3,
-         fecha_accion      = NOW(),
+     SET estado              = $1,
+         id_aprobador        = $2,
+         comentario          = $3,
+         fecha_accion        = NOW(),
          horas_transcurridas = EXTRACT(EPOCH FROM (NOW() - fecha_inicio)) / 3600,
-         vencio_sla        = CASE WHEN EXTRACT(EPOCH FROM (NOW() - fecha_inicio)) / 3600 > sla_horas THEN true ELSE false END
+         vencio_sla          = CASE
+                                  WHEN EXTRACT(EPOCH FROM (NOW() - fecha_inicio)) / 3600 > sla_horas
+                                  THEN true
+                                  ELSE false
+                                END
    WHERE id = $4
    RETURNING *
 `;
@@ -116,18 +120,22 @@ const SQL_NEXT_ETAPA = `
 
 const SQL_ACTIVATE_ETAPA = `
   UPDATE etapas_aprobacion
-     SET estado = 'en_revision', fecha_inicio = NOW()
+     SET estado = 'en_revision',
+         fecha_inicio = NOW()
    WHERE id = $1
 `;
 
 const SQL_UPDATE_ALL_SERVICIOS = `
-  UPDATE solicitud_servicios SET estado = $1, updated_at = NOW()
+  UPDATE solicitud_servicios
+     SET estado = $1,
+         updated_at = NOW()
    WHERE id_solicitud = $2
 `;
 
 const SQL_UPDATE_SERVICIO_ESTADO = `
   UPDATE solicitud_servicios ss
-     SET estado = $1, updated_at = NOW()
+     SET estado = $1,
+         updated_at = NOW()
     FROM servicios sv
    WHERE ss.id_servicio = sv.id
      AND ss.id_solicitud = $2
@@ -135,11 +143,21 @@ const SQL_UPDATE_SERVICIO_ESTADO = `
 `;
 
 const SQL_UPDATE_SOLICITUD = `
-  UPDATE solicitudes SET estado = $1, fecha_cierre = $2 WHERE id = $3
+  UPDATE solicitudes
+     SET estado = $1,
+         fecha_cierre = $2
+   WHERE id = $3
 `;
 
 const SQL_INSERT_HISTORIAL = `
-  INSERT INTO historial (id_solicitud, id_solicitud_servicio, tipo_evento, estado_nuevo, comentario, id_usuario)
+  INSERT INTO historial (
+    id_solicitud,
+    id_solicitud_servicio,
+    tipo_evento,
+    estado_nuevo,
+    comentario,
+    id_usuario
+  )
   VALUES ($1, $2::int, $3, $4, $5, $6)
 `;
 
@@ -166,45 +184,237 @@ const SQL_UPDATE_CORREO_SOLICITANTE = `
   RETURNING p.id, p.correo
 `;
 
+const SQL_GET_SOLICITUD_FOR_UPDATE = `
+  SELECT id, numero, tipo, estado
+    FROM solicitudes
+   WHERE id = $1
+   FOR UPDATE
+`;
+
+const SQL_GET_USUARIOS_MASIVOS_FOR_UPDATE = `
+  SELECT *
+    FROM usuarios_masivos
+   WHERE id_solicitud = $1
+   ORDER BY id
+   FOR UPDATE
+`;
+
+const SQL_UPDATE_USUARIO_MASIVO_DATOS_SERVICIOS = `
+  UPDATE usuarios_masivos
+     SET datos_servicios = $1::jsonb
+   WHERE id = $2
+`;
+
+/* ──────────────────────────────────────────────
+   Helpers JS
+   ────────────────────────────────────────────── */
+function normalizeJson(value, fallback) {
+  if (!value) return fallback;
+
+  if (typeof value === 'object') return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function getServiciosSolicitadosUsuario(row) {
+  const servicios = normalizeJson(row.servicios_solicitados, []);
+
+  if (Array.isArray(servicios)) {
+    return servicios.filter((codigo) => ['c1', 'c4'].includes(codigo));
+  }
+
+  const datosServicios = normalizeJson(row.datos_servicios, {});
+  return Object.keys(datosServicios).filter((codigo) =>
+    ['c1', 'c4'].includes(codigo),
+  );
+}
+
+function getNombreUsuarioMasivo(row) {
+  return `${row.nombres || ''} ${row.apellidos || ''}`.trim() || row.dni || `Usuario ${row.id}`;
+}
+
+function flattenDecisionesMasivas(usuariosMasivosDecisiones) {
+  return usuariosMasivosDecisiones.flatMap((usuarioDecision) =>
+    usuarioDecision.servicios.map((servicioDecision) => ({
+      usuarioMasivoId: usuarioDecision.usuarioMasivoId || null,
+      dni: usuarioDecision.dni || null,
+      codigo: servicioDecision.codigo,
+      decision: servicioDecision.decision,
+      comentario: servicioDecision.comentario || '',
+      datosAtencion: servicioDecision.datosAtencion || {},
+    })),
+  );
+}
+
+function derivarDecisionGlobal(decisiones) {
+  let overallDecision = 'aprobar';
+
+  for (const decision of decisiones) {
+    if (decision.decision === 'rechazar') return 'rechazar';
+    if (decision.decision === 'observar') overallDecision = 'observar';
+  }
+
+  return overallDecision;
+}
+
+function estadoFromDecision(decision) {
+  const map = {
+    aprobar: 'aprobado',
+    observar: 'observado',
+    rechazar: 'rechazado',
+  };
+
+  return map[decision] || 'observado';
+}
+
+function buildComentarioMasivo(decisiones, rolCodigo) {
+  const comentarios = decisiones
+    .filter((d) => String(d.comentario || '').trim())
+    .map((d) => {
+      const usuario = d.dni || d.usuarioMasivoId || 'usuario';
+      return `${usuario} ${String(d.codigo).toUpperCase()}: ${String(d.comentario).trim()}`;
+    });
+
+  if (comentarios.length === 0) {
+    return `Revisión masiva registrada por ${rolCodigo}`;
+  }
+
+  return comentarios.join(' | ');
+}
+
+function mergeDecisionEnDatosServicio({
+  datosServicios,
+  codigo,
+  estadoServicio,
+  decision,
+  comentario,
+  datosAtencion,
+  rolCodigo,
+  aprobadorId,
+}) {
+  const baseServicio =
+    datosServicios[codigo] &&
+    typeof datosServicios[codigo] === 'object' &&
+    !Array.isArray(datosServicios[codigo])
+      ? datosServicios[codigo]
+      : {};
+
+  const revisiones =
+    baseServicio.revisiones &&
+    typeof baseServicio.revisiones === 'object' &&
+    !Array.isArray(baseServicio.revisiones)
+      ? baseServicio.revisiones
+      : {};
+
+  const datosAtencionPrevios =
+    baseServicio.datosAtencion &&
+    typeof baseServicio.datosAtencion === 'object' &&
+    !Array.isArray(baseServicio.datosAtencion)
+      ? baseServicio.datosAtencion
+      : {};
+
+  return {
+    ...datosServicios,
+    [codigo]: {
+      ...baseServicio,
+      estado: estadoServicio,
+      decision,
+      comentario: comentario || '',
+      datosAtencion: {
+        ...datosAtencionPrevios,
+        ...(datosAtencion || {}),
+      },
+      revisiones: {
+        ...revisiones,
+        [rolCodigo]: {
+          decision,
+          estado: estadoServicio,
+          comentario: comentario || '',
+          datosAtencion: datosAtencion || {},
+          idAprobador: aprobadorId,
+          fecha: new Date().toISOString(),
+        },
+      },
+    },
+  };
+}
+
+function agruparEstadoPorServicio(decisiones) {
+  const porServicio = new Map();
+
+  for (const decision of decisiones) {
+    const codigo = decision.codigo;
+
+    if (!porServicio.has(codigo)) {
+      porServicio.set(codigo, []);
+    }
+
+    porServicio.get(codigo).push(decision.decision);
+  }
+
+  return Array.from(porServicio.entries()).map(([codigo, decisionesServicio]) => {
+    let decisionAgregada = 'aprobar';
+
+    if (decisionesServicio.includes('rechazar')) {
+      decisionAgregada = 'rechazar';
+    } else if (decisionesServicio.includes('observar')) {
+      decisionAgregada = 'observar';
+    }
+
+    return {
+      codigo,
+      estado: estadoFromDecision(decisionAgregada),
+    };
+  });
+}
+
 /* ──────────────────────────────────────────────
    listarPorRol
    ────────────────────────────────────────────── */
 async function listarPorRol(roles) {
-  const { rows } = await query(SQL_LISTAR_POR_ROL, [roles])
+  const { rows } = await query(SQL_LISTAR_POR_ROL, [roles]);
 
   if (!roles.includes('soporte_tecnico')) {
-    return rows
+    return rows;
   }
 
-  const { rows: observadas } = await query(SQL_LISTAR_OBSERVADAS_SOPORTE)
+  const { rows: observadas } = await query(SQL_LISTAR_OBSERVADAS_SOPORTE);
 
-  const existentes = new Set(rows.map((r) => Number(r.solicitud_id)))
+  const existentes = new Set(rows.map((r) => Number(r.solicitud_id)));
   const observadasSinDuplicar = observadas.filter(
     (r) => !existentes.has(Number(r.solicitud_id)),
-  )
+  );
 
-  return [...rows, ...observadasSinDuplicar]
+  return [...rows, ...observadasSinDuplicar];
 }
 
 /* ──────────────────────────────────────────────
-   decidir — Transacción de aprobación/observación/rechazo
-   Acepta decisiones por servicio: [{ codigo, decision, comentario }]
-   La decisión global se deriva: rechazar > observar > aprobar
+   decidir — Flujo individual
    ────────────────────────────────────────────── */
-  async function decidir(
-    etapaId,
-    servicioDecisiones,
-    comentarioGeneral,
-    aprobadorId,
-    usuarioRedAsignado = null,
-    rolesUsuario = [],
-    datosAtencion = {},
-  ) {
-    // Derivar decisión global: rechazar > observar > aprobar
+async function decidir(
+  etapaId,
+  servicioDecisiones,
+  comentarioGeneral,
+  aprobadorId,
+  usuarioRedAsignado = null,
+  rolesUsuario = [],
+  datosAtencion = {},
+) {
   let overallDecision = 'aprobar';
+
   for (const sd of servicioDecisiones) {
-    if (sd.decision === 'rechazar') { overallDecision = 'rechazar'; break; }
-    if (sd.decision === 'observar') overallDecision = 'observar';
+    if (sd.decision === 'rechazar') {
+      overallDecision = 'rechazar';
+      break;
+    }
+
+    if (sd.decision === 'observar') {
+      overallDecision = 'observar';
+    }
   }
 
   const client = await getClient();
@@ -212,183 +422,187 @@ async function listarPorRol(roles) {
   try {
     await client.query('BEGIN');
 
-    // 1. Obtener la etapa (con lock)
     const { rows: [etapa] } = await client.query(SQL_GET_ETAPA, [etapaId]);
+
     if (!etapa) {
       throw { status: 404, message: 'Etapa no encontrada' };
     }
 
-    // 2. Validar estado
     if (!['pendiente', 'en_revision'].includes(etapa.estado)) {
-      throw { status: 409, message: `La etapa ya fue procesada (estado: ${etapa.estado})` };
+      throw {
+        status: 409,
+        message: `La etapa ya fue procesada (estado: ${etapa.estado})`,
+      };
     }
 
-    // 2b. Validar que el usuario tiene el rol correcto para esta etapa
     if (rolesUsuario.length > 0 && !rolesUsuario.includes(etapa.rol_codigo)) {
-      throw { status: 403, message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})` };
+      throw {
+        status: 403,
+        message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})`,
+      };
     }
 
-    // 3. Determinar nuevo estado global
     const ESTADO_MAP = {
       aprobar: 'aprobado',
       observar: 'observado',
       rechazar: 'rechazado',
     };
+
     const nuevoEstado = ESTADO_MAP[overallDecision];
 
-    // Armar comentario consolidado (nunca null — algunas columnas tienen NOT NULL)
-    const comentarioEtapa = comentarioGeneral ||
+    const comentarioEtapa =
+      comentarioGeneral ||
       servicioDecisiones
-        .filter(sd => sd.comentario?.trim())
-        .map(sd => `${sd.codigo.toUpperCase()}: ${sd.comentario.trim()}`)
+        .filter((sd) => sd.comentario?.trim())
+        .map((sd) => `${sd.codigo.toUpperCase()}: ${sd.comentario.trim()}`)
         .join(' | ') ||
       '';
 
-    // Actualizar etapa con decisión global
     const { rows: [etapaActualizada] } = await client.query(SQL_UPDATE_ETAPA, [
-      nuevoEstado, aprobadorId, comentarioEtapa, etapaId,
+      nuevoEstado,
+      aprobadorId,
+      comentarioEtapa,
+      etapaId,
     ]);
 
     const solicitudId = etapa.id_solicitud;
 
-        const codigosDecision = servicioDecisiones.map((sd) => sd.codigo);
+    const codigosDecision = servicioDecisiones.map((sd) => sd.codigo);
 
-        const { rows: serviciosDecision } = await client.query(
-          SQL_GET_SERVICIOS_SOLICITUD,
-          [solicitudId, codigosDecision],
-        );
-
-        const servicioPorCodigo = new Map(
-          serviciosDecision.map((s) => [s.codigo, s]),
-        );
-
-        const decisionC1 = servicioDecisiones.find((sd) => sd.codigo === 'c1');
-        const servicioC1 = servicioPorCodigo.get('c1');
-
-        const esC1Creacion =
-          Boolean(decisionC1) &&
-          servicioC1?.datos?.tipoOperacion === 'creacion';
-
-        const c1AprobadoCreacion =
-          esC1Creacion &&
-          decisionC1?.decision === 'aprobar';
-
-        // Seguridad debe registrar el usuario de red asignado solo para C1 creación.
-        if (
-          etapa.rol_codigo === 'seguridad_accesos' &&
-          c1AprobadoCreacion &&
-          !String(usuarioRedAsignado || '').trim()
-        ) {
-          throw {
-            status: 400,
-            message: 'Debe registrar el usuario de red asignado para C1 creación',
-          };
-        }
-
-        // Redes debe registrar datos técnicos al aprobar C1 creación.
-        if (
-          etapa.rol_codigo === 'equipo_redes' &&
-          c1AprobadoCreacion
-        ) {
-          const datosC1 = datosAtencion?.c1 || {};
-          const usuarioRedCreado = String(datosC1.usuarioRedCreado || '').trim();
-          const correoCreado = String(datosC1.correoCreado || '').trim();
-          const perfilInternet = String(datosC1.perfilInternet || '').trim();
-
-          if (!usuarioRedCreado) {
-            throw {
-              status: 400,
-              message: 'Redes debe confirmar el usuario de red creado',
-            };
-          }
-
-          if (!correoCreado) {
-            throw {
-              status: 400,
-              message: 'Redes debe registrar el correo institucional asociado',
-            };
-          }
-
-          if (!perfilInternet) {
-            throw {
-              status: 400,
-              message: 'Redes debe confirmar el perfil de internet asignado',
-            };
-          }
-
-          datosAtencion.c1 = {
-            ...datosC1,
-            capacidadCorreo: datosC1.capacidadCorreo || '100 MB',
-          };
-
-          const { rows: correoActualizadoRows } = await client.query(
-            SQL_UPDATE_CORREO_SOLICITANTE,
-            [solicitudId, correoCreado],
-          );
-
-          if (correoActualizadoRows.length > 0) {
-            await client.query(SQL_INSERT_HISTORIAL, [
-              solicitudId,
-              null,
-              'APROBACION',
-              'correo_actualizado',
-              `Correo institucional actualizado en perfil: ${correoCreado}`,
-              aprobadorId,
-            ]);
-          }
-
-        }
-
-        // Guardar datos técnicos en etapas intermedias.
-        // Ejemplo: Redes registra equipoDesbloqueado, fechaDesbloqueo, correoCreado, etc.
-        // El cierre final de Soporte seguirá usando atender().
-        if (overallDecision === 'aprobar' && datosAtencion && typeof datosAtencion === 'object') {
-          const codigosConDatos = Object.keys(datosAtencion).filter((codigo) => {
-            const data = datosAtencion[codigo];
-
-            return data &&
-              typeof data === 'object' &&
-              !Array.isArray(data) &&
-              Object.values(data).some((v) => String(v || '').trim());
-          });
-
-          for (const codigo of codigosConDatos) {
-            await client.query(
-              `UPDATE solicitud_servicios ss
-                  SET datos_atencion = COALESCE(ss.datos_atencion, '{}'::jsonb) || $1::jsonb,
-                      updated_at = NOW()
-                FROM servicios sv
-                WHERE ss.id_servicio = sv.id
-                  AND ss.id_solicitud = $2
-                  AND sv.codigo = $3`,
-              [JSON.stringify(datosAtencion[codigo]), solicitudId, codigo],
-            );
-          }
-        }
-
-    // Obtener numero de solicitud
-    const { rows: [sol] } = await client.query(
-      `SELECT numero FROM solicitudes WHERE id = $1`, [solicitudId]
+    const { rows: serviciosDecision } = await client.query(
+      SQL_GET_SERVICIOS_SOLICITUD,
+      [solicitudId, codigosDecision],
     );
 
-    // 4. Aprobar → avanzar flujo
-    if (overallDecision === 'aprobar') {
-      const { rows: [nextEtapa] } = await client.query(SQL_NEXT_ETAPA, [
-        solicitudId, etapa.orden,
-      ]);
+    const servicioPorCodigo = new Map(
+      serviciosDecision.map((s) => [s.codigo, s]),
+    );
 
-      if (nextEtapa) {
-        // Activar siguiente etapa (servicios quedan en pendiente hasta final)
-        await client.query(SQL_ACTIVATE_ETAPA, [nextEtapa.id]);
-      } else {
-        // Última etapa → todos los servicios atendidos, solicitud completada
-        await client.query(SQL_UPDATE_ALL_SERVICIOS, ['atendido', solicitudId]);
-        await client.query(SQL_UPDATE_SOLICITUD, ['completada', new Date(), solicitudId]);
+    const decisionC1 = servicioDecisiones.find((sd) => sd.codigo === 'c1');
+    const servicioC1 = servicioPorCodigo.get('c1');
+
+    const esC1Creacion =
+      Boolean(decisionC1) &&
+      servicioC1?.datos?.tipoOperacion === 'creacion';
+
+    const c1AprobadoCreacion =
+      esC1Creacion &&
+      decisionC1?.decision === 'aprobar';
+
+    if (
+      etapa.rol_codigo === 'seguridad_accesos' &&
+      c1AprobadoCreacion &&
+      !String(usuarioRedAsignado || '').trim()
+    ) {
+      throw {
+        status: 400,
+        message: 'Debe registrar el usuario de red asignado para C1 creación',
+      };
+    }
+
+    if (
+      etapa.rol_codigo === 'equipo_redes' &&
+      c1AprobadoCreacion
+    ) {
+      const datosC1 = datosAtencion?.c1 || {};
+      const usuarioRedCreado = String(datosC1.usuarioRedCreado || '').trim();
+      const correoCreado = String(datosC1.correoCreado || '').trim();
+      const perfilInternet = String(datosC1.perfilInternet || '').trim();
+
+      if (!usuarioRedCreado) {
+        throw {
+          status: 400,
+          message: 'Redes debe confirmar el usuario de red creado',
+        };
+      }
+
+      if (!correoCreado) {
+        throw {
+          status: 400,
+          message: 'Redes debe registrar el correo institucional asociado',
+        };
+      }
+
+      if (!perfilInternet) {
+        throw {
+          status: 400,
+          message: 'Redes debe confirmar el perfil de internet asignado',
+        };
+      }
+
+      datosAtencion.c1 = {
+        ...datosC1,
+        capacidadCorreo: datosC1.capacidadCorreo || '100 MB',
+      };
+
+      const { rows: correoActualizadoRows } = await client.query(
+        SQL_UPDATE_CORREO_SOLICITANTE,
+        [solicitudId, correoCreado],
+      );
+
+      if (correoActualizadoRows.length > 0) {
+        await client.query(SQL_INSERT_HISTORIAL, [
+          solicitudId,
+          null,
+          'APROBACION',
+          'correo_actualizado',
+          `Correo institucional actualizado en perfil: ${correoCreado}`,
+          aprobadorId,
+        ]);
       }
     }
 
-    // 4b. Seguridad asigna el usuario de red para C1 creación.
-    // Se guarda como usuarioRedAsignado; Redes luego confirma usuarioRedCreado.
+    if (
+      overallDecision === 'aprobar' &&
+      datosAtencion &&
+      typeof datosAtencion === 'object'
+    ) {
+      const codigosConDatos = Object.keys(datosAtencion).filter((codigo) => {
+        const data = datosAtencion[codigo];
+
+        return data &&
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          Object.values(data).some((v) => String(v || '').trim());
+      });
+
+      for (const codigo of codigosConDatos) {
+        await client.query(
+          `UPDATE solicitud_servicios ss
+              SET datos_atencion = COALESCE(ss.datos_atencion, '{}'::jsonb) || $1::jsonb,
+                  updated_at = NOW()
+            FROM servicios sv
+            WHERE ss.id_servicio = sv.id
+              AND ss.id_solicitud = $2
+              AND sv.codigo = $3`,
+          [JSON.stringify(datosAtencion[codigo]), solicitudId, codigo],
+        );
+      }
+    }
+
+    const { rows: [sol] } = await client.query(
+      `SELECT numero FROM solicitudes WHERE id = $1`,
+      [solicitudId],
+    );
+
+    if (overallDecision === 'aprobar') {
+      const { rows: [nextEtapa] } = await client.query(SQL_NEXT_ETAPA, [
+        solicitudId,
+        etapa.orden,
+      ]);
+
+      if (nextEtapa) {
+        await client.query(SQL_ACTIVATE_ETAPA, [nextEtapa.id]);
+      } else {
+        await client.query(SQL_UPDATE_ALL_SERVICIOS, ['atendido', solicitudId]);
+        await client.query(SQL_UPDATE_SOLICITUD, [
+          'completada',
+          new Date(),
+          solicitudId,
+        ]);
+      }
+    }
+
     if (
       overallDecision === 'aprobar' &&
       etapa.rol_codigo === 'seguridad_accesos' &&
@@ -407,22 +621,33 @@ async function listarPorRol(roles) {
       );
     }
 
-    // 5. Rechazar → cerrar solicitud y todos los servicios
     if (overallDecision === 'rechazar') {
       await client.query(SQL_UPDATE_ALL_SERVICIOS, ['rechazado', solicitudId]);
-      await client.query(SQL_UPDATE_SOLICITUD, ['rechazada', new Date(), solicitudId]);
+      await client.query(SQL_UPDATE_SOLICITUD, [
+        'rechazada',
+        new Date(),
+        solicitudId,
+      ]);
     }
 
-    // 6. Observar → actualizar cada servicio con su decisión individual
     if (overallDecision === 'observar') {
       for (const sd of servicioDecisiones) {
         const estadoServicio = ESTADO_MAP[sd.decision] || 'observado';
-        await client.query(SQL_UPDATE_SERVICIO_ESTADO, [estadoServicio, solicitudId, sd.codigo]);
+
+        await client.query(SQL_UPDATE_SERVICIO_ESTADO, [
+          estadoServicio,
+          solicitudId,
+          sd.codigo,
+        ]);
       }
-      await client.query(SQL_UPDATE_SOLICITUD, ['observada', null, solicitudId]);
+
+      await client.query(SQL_UPDATE_SOLICITUD, [
+        'observada',
+        null,
+        solicitudId,
+      ]);
     }
 
-    // 7. Historial
     const TIPO_EVENTO_MAP = {
       aprobar: 'APROBACION',
       observar: 'OBSERVACION',
@@ -455,8 +680,270 @@ async function listarPorRol(roles) {
 }
 
 /* ──────────────────────────────────────────────
-   atender — Transacción de atención técnica (última etapa)
-   Guarda datos de aprovisionamiento y marca TODOS los servicios como atendidos
+   decidirMasiva — Flujo grupal por usuario-servicio
+   ────────────────────────────────────────────── */
+async function decidirMasiva(
+  etapaId,
+  usuariosMasivosDecisiones,
+  aprobadorId,
+  rolesUsuario = [],
+) {
+  const decisiones = flattenDecisionesMasivas(usuariosMasivosDecisiones);
+
+  if (decisiones.length === 0) {
+    throw {
+      status: 400,
+      message: 'Debe enviar al menos una decisión por usuario-servicio',
+    };
+  }
+
+  const overallDecision = derivarDecisionGlobal(decisiones);
+  const nuevoEstado = estadoFromDecision(overallDecision);
+
+  const client = await getClient();
+
+  try {
+    await client.query('BEGIN');
+
+    const { rows: [etapa] } = await client.query(SQL_GET_ETAPA, [etapaId]);
+
+    if (!etapa) {
+      throw { status: 404, message: 'Etapa no encontrada' };
+    }
+
+    if (!['pendiente', 'en_revision'].includes(etapa.estado)) {
+      throw {
+        status: 409,
+        message: `La etapa ya fue procesada (estado: ${etapa.estado})`,
+      };
+    }
+
+    if (rolesUsuario.length > 0 && !rolesUsuario.includes(etapa.rol_codigo)) {
+      throw {
+        status: 403,
+        message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})`,
+      };
+    }
+
+    const solicitudId = etapa.id_solicitud;
+
+    const { rows: [solicitud] } = await client.query(
+      SQL_GET_SOLICITUD_FOR_UPDATE,
+      [solicitudId],
+    );
+
+    if (!solicitud) {
+      throw { status: 404, message: 'Solicitud no encontrada' };
+    }
+
+    if (solicitud.tipo !== 'masiva') {
+      throw {
+        status: 400,
+        message: 'Este flujo masivo solo aplica a solicitudes grupales',
+      };
+    }
+
+    const { rows: usuariosMasivos } = await client.query(
+      SQL_GET_USUARIOS_MASIVOS_FOR_UPDATE,
+      [solicitudId],
+    );
+
+    if (usuariosMasivos.length === 0) {
+      throw {
+        status: 400,
+        message: 'La solicitud grupal no tiene usuarios asociados',
+      };
+    }
+
+    const usuariosPorId = new Map(
+      usuariosMasivos.map((u) => [Number(u.id), u]),
+    );
+
+    const usuariosPorDni = new Map(
+      usuariosMasivos.map((u) => [String(u.dni), u]),
+    );
+
+    const decisionesPorUsuario = new Map();
+
+    for (const usuarioDecision of usuariosMasivosDecisiones) {
+      const usuario = usuarioDecision.usuarioMasivoId
+        ? usuariosPorId.get(Number(usuarioDecision.usuarioMasivoId))
+        : usuariosPorDni.get(String(usuarioDecision.dni));
+
+      if (!usuario) {
+        throw {
+          status: 400,
+          message: `Usuario masivo no encontrado en esta solicitud: ${usuarioDecision.dni || usuarioDecision.usuarioMasivoId}`,
+        };
+      }
+
+      const serviciosSolicitados = getServiciosSolicitadosUsuario(usuario);
+      const serviciosDecision = usuarioDecision.servicios || [];
+
+      for (const sd of serviciosDecision) {
+        if (!serviciosSolicitados.includes(sd.codigo)) {
+          throw {
+            status: 400,
+            message: `${getNombreUsuarioMasivo(usuario)} no solicitó el servicio ${String(sd.codigo).toUpperCase()}`,
+          };
+        }
+      }
+
+      decisionesPorUsuario.set(Number(usuario.id), {
+        usuario,
+        servicios: serviciosDecision,
+      });
+    }
+
+    for (const usuario of usuariosMasivos) {
+      const serviciosSolicitados = getServiciosSolicitadosUsuario(usuario);
+      const decisionesUsuario = decisionesPorUsuario.get(Number(usuario.id));
+
+      if (!decisionesUsuario) {
+        throw {
+          status: 400,
+          message: `Faltan decisiones para ${getNombreUsuarioMasivo(usuario)}`,
+        };
+      }
+
+      const codigosDecididos = new Set(
+        decisionesUsuario.servicios.map((sd) => sd.codigo),
+      );
+
+      for (const codigo of serviciosSolicitados) {
+        if (!codigosDecididos.has(codigo)) {
+          throw {
+            status: 400,
+            message: `Falta decisión para ${getNombreUsuarioMasivo(usuario)} - ${String(codigo).toUpperCase()}`,
+          };
+        }
+      }
+    }
+
+    const comentarioEtapa = buildComentarioMasivo(
+      decisiones,
+      etapa.rol_codigo,
+    );
+
+    const { rows: [etapaActualizada] } = await client.query(SQL_UPDATE_ETAPA, [
+      nuevoEstado,
+      aprobadorId,
+      comentarioEtapa,
+      etapaId,
+    ]);
+
+    for (const { usuario, servicios } of decisionesPorUsuario.values()) {
+      let datosServicios = normalizeJson(usuario.datos_servicios, {});
+
+      for (const sd of servicios) {
+        const estadoServicio = estadoFromDecision(sd.decision);
+
+        datosServicios = mergeDecisionEnDatosServicio({
+          datosServicios,
+          codigo: sd.codigo,
+          estadoServicio,
+          decision: sd.decision,
+          comentario: sd.comentario || '',
+          datosAtencion: sd.datosAtencion || {},
+          rolCodigo: etapa.rol_codigo,
+          aprobadorId,
+        });
+      }
+
+      await client.query(SQL_UPDATE_USUARIO_MASIVO_DATOS_SERVICIOS, [
+        JSON.stringify(datosServicios),
+        usuario.id,
+      ]);
+    }
+
+    for (const servicioEstado of agruparEstadoPorServicio(decisiones)) {
+      await client.query(SQL_UPDATE_SERVICIO_ESTADO, [
+        servicioEstado.estado,
+        solicitudId,
+        servicioEstado.codigo,
+      ]);
+    }
+
+    if (overallDecision === 'aprobar') {
+      const { rows: [nextEtapa] } = await client.query(SQL_NEXT_ETAPA, [
+        solicitudId,
+        etapa.orden,
+      ]);
+
+      if (nextEtapa) {
+        await client.query(SQL_ACTIVATE_ETAPA, [nextEtapa.id]);
+        await client.query(SQL_UPDATE_SOLICITUD, [
+          'en_proceso',
+          null,
+          solicitudId,
+        ]);
+      } else {
+        await client.query(SQL_UPDATE_ALL_SERVICIOS, [
+          'atendido',
+          solicitudId,
+        ]);
+        await client.query(SQL_UPDATE_SOLICITUD, [
+          'completada',
+          new Date(),
+          solicitudId,
+        ]);
+      }
+    }
+
+    if (overallDecision === 'observar') {
+      await client.query(SQL_UPDATE_SOLICITUD, [
+        'observada',
+        null,
+        solicitudId,
+      ]);
+    }
+
+    if (overallDecision === 'rechazar') {
+      await client.query(SQL_UPDATE_ALL_SERVICIOS, [
+        'rechazado',
+        solicitudId,
+      ]);
+      await client.query(SQL_UPDATE_SOLICITUD, [
+        'rechazada',
+        new Date(),
+        solicitudId,
+      ]);
+    }
+
+    const TIPO_EVENTO_MAP = {
+      aprobar: 'APROBACION',
+      observar: 'OBSERVACION',
+      rechazar: 'RECHAZO',
+    };
+
+    await client.query(SQL_INSERT_HISTORIAL, [
+      solicitudId,
+      null,
+      TIPO_EVENTO_MAP[overallDecision],
+      nuevoEstado,
+      comentarioEtapa,
+      aprobadorId,
+    ]);
+
+    await client.query('COMMIT');
+
+    return {
+      etapa: etapaActualizada,
+      solicitudId,
+      numero: solicitud.numero,
+      decision: overallDecision,
+      modo: 'masiva',
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/* ──────────────────────────────────────────────
+   atender — Transacción de atención técnica individual
    ────────────────────────────────────────────── */
 async function atender(etapaId, datosAtencion, comentario, aprobadorId, rolesUsuario = []) {
   const client = await getClient();
@@ -464,49 +951,58 @@ async function atender(etapaId, datosAtencion, comentario, aprobadorId, rolesUsu
   try {
     await client.query('BEGIN');
 
-    // 1. Obtener la etapa (con lock)
     const { rows: [etapa] } = await client.query(SQL_GET_ETAPA, [etapaId]);
+
     if (!etapa) {
       throw { status: 404, message: 'Etapa no encontrada' };
     }
 
-    // 2. Validar estado
     if (!['pendiente', 'en_revision'].includes(etapa.estado)) {
-      throw { status: 409, message: `La etapa ya fue procesada (estado: ${etapa.estado})` };
+      throw {
+        status: 409,
+        message: `La etapa ya fue procesada (estado: ${etapa.estado})`,
+      };
     }
 
-    // 2b. Validar rol
     if (rolesUsuario.length > 0 && !rolesUsuario.includes(etapa.rol_codigo)) {
-      throw { status: 403, message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})` };
+      throw {
+        status: 403,
+        message: `No tiene permisos para actuar en esta etapa (rol requerido: ${etapa.rol_codigo})`,
+      };
     }
 
-    // 3. Verificar que es la última etapa
     const { rows: [nextEtapa] } = await client.query(SQL_NEXT_ETAPA, [
-      etapa.id_solicitud, etapa.orden,
+      etapa.id_solicitud,
+      etapa.orden,
     ]);
+
     if (nextEtapa) {
-      throw { status: 400, message: 'Solo se puede atender en la última etapa del flujo' };
+      throw {
+        status: 400,
+        message: 'Solo se puede atender en la última etapa del flujo',
+      };
     }
 
-    // 4. Actualizar etapa como aprobado
     const { rows: [etapaActualizada] } = await client.query(SQL_UPDATE_ETAPA, [
-      'aprobado', aprobadorId, comentario || 'Servicio atendido', etapaId,
+      'aprobado',
+      aprobadorId,
+      comentario || 'Servicio atendido',
+      etapaId,
     ]);
 
     const solicitudId = etapa.id_solicitud;
 
-    // 5. Guardar datos_atencion en cada solicitud_servicio según su código
-    // datosAtencion viene como { c1: { campo: valor }, c4: { campo: valor } }
     const { rows: ssRows } = await client.query(
       `SELECT ss.id, sv.codigo
          FROM solicitud_servicios ss
          JOIN servicios sv ON sv.id = ss.id_servicio
         WHERE ss.id_solicitud = $1`,
-      [solicitudId]
+      [solicitudId],
     );
 
     for (const ss of ssRows) {
       const srvData = datosAtencion[ss.codigo] || {};
+
       await client.query(
         `UPDATE solicitud_servicios
             SET datos_atencion = COALESCE(datos_atencion, '{}'::jsonb) || $1::jsonb,
@@ -517,15 +1013,17 @@ async function atender(etapaId, datosAtencion, comentario, aprobadorId, rolesUsu
       );
     }
 
-    // 6. Marcar solicitud como completada
-    await client.query(SQL_UPDATE_SOLICITUD, ['completada', new Date(), solicitudId]);
+    await client.query(SQL_UPDATE_SOLICITUD, [
+      'completada',
+      new Date(),
+      solicitudId,
+    ]);
 
-    // 7. Obtener numero
     const { rows: [sol] } = await client.query(
-      `SELECT numero FROM solicitudes WHERE id = $1`, [solicitudId]
+      `SELECT numero FROM solicitudes WHERE id = $1`,
+      [solicitudId],
     );
 
-    // 8. Historial
     await client.query(SQL_INSERT_HISTORIAL, [
       solicitudId,
       null,
@@ -551,4 +1049,9 @@ async function atender(etapaId, datosAtencion, comentario, aprobadorId, rolesUsu
   }
 }
 
-module.exports = { listarPorRol, decidir, atender };
+module.exports = {
+  listarPorRol,
+  decidir,
+  decidirMasiva,
+  atender,
+};
