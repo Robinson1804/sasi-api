@@ -243,18 +243,34 @@ function normalizeJson(value, fallback) {
   }
 }
 
-function getServiciosSolicitadosUsuario(row) {
-  const servicios = normalizeJson(row.servicios_solicitados, []);
+const ESTADOS_NO_CONTINUAN = new Set(['observado', 'rechazado']);
 
-  if (Array.isArray(servicios) && servicios.length > 0) {
-    return servicios.filter((codigo) => ['c1', 'c4'].includes(codigo));
+function getEstadoServicioMasivo(datosServicios, codigo) {
+  const data = datosServicios?.[codigo];
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return null;
   }
 
+  return String(data.estado || '').trim();
+}
+
+function getServiciosSolicitadosUsuario(row) {
+  const servicios = normalizeJson(row.servicios_solicitados, []);
   const datosServicios = normalizeJson(row.datos_servicios, {});
 
-  return Object.keys(datosServicios).filter((codigo) =>
-    ['c1', 'c4'].includes(codigo),
-  );
+  const codigosBase =
+    Array.isArray(servicios) && servicios.length > 0
+      ? servicios.filter((codigo) => ['c1', 'c4'].includes(codigo))
+      : Object.keys(datosServicios).filter((codigo) => ['c1', 'c4'].includes(codigo));
+
+  return codigosBase.filter((codigo) => {
+    const estado = getEstadoServicioMasivo(datosServicios, codigo);
+
+    // Si ya fue observado o rechazado en una etapa anterior,
+    // no debe continuar a las siguientes etapas.
+    return !ESTADOS_NO_CONTINUAN.has(estado);
+  });
 }
 
 function getNombreUsuarioMasivo(row) {
@@ -944,6 +960,13 @@ async function decidirMasiva(
 
     for (const usuario of usuariosMasivos) {
       const serviciosSolicitados = getServiciosSolicitadosUsuario(usuario);
+
+      // Si el usuario ya no tiene servicios activos porque todos fueron
+      // observados o rechazados en una etapa anterior, no debe exigirse decisión.
+      if (serviciosSolicitados.length === 0) {
+        continue;
+      }
+
       const decisionesUsuario = decisionesPorUsuario.get(Number(usuario.id));
 
       if (!decisionesUsuario) {
