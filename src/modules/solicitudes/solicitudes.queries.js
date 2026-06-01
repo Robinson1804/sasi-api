@@ -279,9 +279,24 @@ async function obtenerPorId(id) {
 
   try {
     const { rows: umRows } = await query(
-      `SELECT * FROM usuarios_masivos WHERE id_solicitud = $1 ORDER BY id`,
+      `SELECT
+              um.*,
+              p.tipo_vinculo AS tipo_vinculo_actual,
+              p.fecha_inicio_contrato AS fecha_inicio_contrato_actual,
+              p.fecha_fin_contrato AS fecha_fin_contrato_actual,
+              p.correo AS correo_institucional_actual,
+              p.telefono AS telefono_actual,
+              p.oficina AS oficina_actual,
+              se.nombre AS sede_actual
+        FROM usuarios_masivos um
+        LEFT JOIN personal p ON p.dni = um.dni
+        LEFT JOIN sedes se ON se.id = p.id_sede
+        WHERE um.id_solicitud = $1
+        ORDER BY um.id`,
       [id]
     )
+
+    usuariosMasivos = umRows
 
     usuariosMasivos = umRows
   } catch (_) {
