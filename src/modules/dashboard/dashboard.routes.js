@@ -3,7 +3,6 @@ const { verifyToken } = require('../../middleware/auth');
 const { requireRole } = require('../../middleware/role');
 const ctrl = require('./dashboard.controller');
 
-
 router.use(verifyToken);
 router.use(requireRole('administrador_sasi', 'jefe_supervisor', 'seguridad_accesos', 'equipo_redes', 'dba', 'soporte_tecnico'));
 

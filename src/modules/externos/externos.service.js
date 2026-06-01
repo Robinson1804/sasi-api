@@ -126,6 +126,66 @@ function evaluarContrato(fechaFinContrato) {
   }
 }
 
+async function obtenerServiciosAsignadosPorDni(dni) {
+  const { rows } = await query(
+    `
+    WITH persona AS (
+      SELECT id, dni, correo
+        FROM personal
+       WHERE dni = $1
+       LIMIT 1
+    ),
+
+    servicios_individuales AS (
+      SELECT DISTINCT sv.codigo
+        FROM persona p
+        JOIN solicitudes s ON s.id_solicitante = p.id
+        JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
+        JOIN servicios sv ON sv.id = ss.id_servicio
+       WHERE s.estado = 'completada'
+         AND ss.estado IN ('aprobado', 'atendido')
+         AND sv.codigo IN ('c1', 'c4')
+    ),
+
+    servicios_masivos AS (
+      SELECT DISTINCT item.codigo
+        FROM persona p
+        JOIN usuarios_masivos um ON um.dni = p.dni
+        JOIN solicitudes s ON s.id = um.id_solicitud
+        CROSS JOIN LATERAL jsonb_each(um.datos_servicios) AS item(codigo, data)
+       WHERE s.tipo = 'masiva'
+         AND s.estado = 'completada'
+         AND item.codigo IN ('c1', 'c4')
+         AND COALESCE(item.data->>'estado', '') IN ('aprobado', 'atendido')
+    ),
+
+    servicios AS (
+      SELECT codigo FROM servicios_individuales
+      UNION
+      SELECT codigo FROM servicios_masivos
+    )
+
+    SELECT
+      EXISTS (SELECT 1 FROM persona WHERE correo IS NOT NULL AND BTRIM(correo) <> '') AS tiene_correo,
+      EXISTS (SELECT 1 FROM servicios WHERE codigo = 'c1') AS tiene_c1,
+      EXISTS (SELECT 1 FROM servicios WHERE codigo = 'c4') AS tiene_c4
+    `,
+    [dni],
+  )
+
+  const row = rows[0] || {}
+
+  return {
+    tieneCorreoInstitucional: Boolean(row.tiene_correo),
+    tieneC1Asignado: Boolean(row.tiene_c1),
+    tieneVpnAsignada: Boolean(row.tiene_c4),
+    serviciosAsignados: {
+      c1: Boolean(row.tiene_c1),
+      c4: Boolean(row.tiene_c4),
+    },
+  }
+}
+
 async function validarParaSolicitud(dni) {
   const dniNorm = String(dni || '').replace(/\D/g, '').padStart(8, '0')
 
@@ -185,6 +245,8 @@ async function validarParaSolicitud(dni) {
   const row = rows[0]
   const contrato = evaluarContrato(row.fecha_fin_contrato)
 
+  const serviciosActuales = await obtenerServiciosAsignadosPorDni(row.dni)
+
   const restricciones = [...contrato.restricciones]
 
   if (row.estado && String(row.estado).toLowerCase() !== 'activo') {
@@ -212,6 +274,11 @@ async function validarParaSolicitud(dni) {
     contratoEstado: contrato.contratoEstado,
     puedeSolicitar,
     restricciones,
+
+    tieneCorreoInstitucional: serviciosActuales.tieneCorreoInstitucional,
+    tieneC1Asignado: serviciosActuales.tieneC1Asignado,
+    tieneVpnAsignada: serviciosActuales.tieneVpnAsignada,
+    serviciosAsignados: serviciosActuales.serviciosAsignados,
   }
 }
 
@@ -221,4 +288,5 @@ module.exports = {
   listar,
   recargar,
   validarParaSolicitud,
+  obtenerServiciosAsignadosPorDni,
 }
