@@ -81,6 +81,41 @@ const SQL_LISTAR_OBSERVADAS_SOPORTE = `
    ORDER BY s.updated_at DESC
 `;
 
+const SQL_LISTAR_RECHAZADAS_SOPORTE = `
+  SELECT
+         s.id AS etapa_id,
+         s.id AS solicitud_id,
+         s.numero,
+         s.snap_nombres AS solicitante,
+         s.snap_sede AS sede,
+         s.tipo,
+         NULL::int AS id_rol,
+         'soporte_tecnico' AS rol_codigo,
+         'Soporte Técnico' AS rol_nombre,
+         s.estado AS etapa_estado,
+         s.updated_at AS fecha_inicio,
+         NULL::numeric AS sla_horas,
+         NULL::numeric AS horas_transcurridas,
+         false AS vencio_sla,
+         COALESCE(
+           array_agg(DISTINCT sv.codigo ORDER BY sv.codigo)
+             FILTER (WHERE sv.codigo IS NOT NULL),
+           ARRAY[]::varchar[]
+         ) AS servicios_codigos,
+         NULL::numeric AS horas_restantes_sla,
+         NULL::smallint AS orden,
+         NULL::smallint AS max_orden,
+         'rechazada' AS categoria,
+         'Rechazada' AS categoria_label
+    FROM solicitudes s
+    LEFT JOIN solicitud_servicios ss ON ss.id_solicitud = s.id
+    LEFT JOIN servicios sv ON sv.id = ss.id_servicio
+   WHERE s.estado = 'rechazada'
+     AND s.id_solicitud_padre IS NULL
+   GROUP BY s.id
+   ORDER BY s.updated_at DESC
+`;
+
 /* ──────────────────────────────────────────────
    SQL — Helpers transaccionales
    ────────────────────────────────────────────── */
@@ -546,13 +581,28 @@ async function listarPorRol(roles) {
   }
 
   const { rows: observadas } = await query(SQL_LISTAR_OBSERVADAS_SOPORTE);
+  const { rows: rechazadas } = await query(SQL_LISTAR_RECHAZADAS_SOPORTE);
 
   const existentes = new Set(rows.map((r) => Number(r.solicitud_id)));
+
   const observadasSinDuplicar = observadas.filter(
     (r) => !existentes.has(Number(r.solicitud_id)),
   );
 
-  return [...rows, ...observadasSinDuplicar];
+  const existentesConObservadas = new Set([
+    ...rows.map((r) => Number(r.solicitud_id)),
+    ...observadasSinDuplicar.map((r) => Number(r.solicitud_id)),
+  ]);
+
+  const rechazadasSinDuplicar = rechazadas.filter(
+    (r) => !existentesConObservadas.has(Number(r.solicitud_id)),
+  );
+
+  return [
+    ...rows,
+    ...observadasSinDuplicar,
+    ...rechazadasSinDuplicar,
+  ];
 }
 
 /* ──────────────────────────────────────────────
