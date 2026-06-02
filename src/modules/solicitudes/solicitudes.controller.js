@@ -11,19 +11,45 @@ const { mapSolicitudRow } = require('./solicitudes.helpers')
 async function listar(req, res) {
   try {
     const { limit, offset, page } = parsePagination(req)
-    const { estado, servicio, sede, periodo, search } = req.query
+    const {
+      estado,
+      servicio,
+      sede,
+      periodo,
+      search,
+      scope,
+    } = req.query
 
-    // Si el usuario es solicitante, solo ve sus propias solicitudes
     const roles = req.user.roles || []
-    const esSolicitante = roles.length === 1 && roles[0] === 'usuario_solicitante'
+
+    // Usuario que únicamente tiene rol de solicitante.
+    // Este caso debe ver solo sus propias solicitudes.
+    const esSoloSolicitante =
+      roles.length === 1 && roles[0] === 'usuario_solicitante'
+
+    // Vista explícita "Mis Solicitudes".
+    // Aunque el usuario también tenga roles técnicos, esta vista debe mostrar
+    // únicamente lo que él creó como solicitante.
+    const esVistaMisSolicitudes = scope === 'mis'
 
     const filters = {
-      estado:         estado        || undefined,
-      servicio:       servicio      || undefined,
-      sede:           sede          || undefined,
-      periodo:        periodo       || undefined,
-      search:         search        || undefined,
-      idSolicitante:  esSolicitante ? req.user.idPersonal : undefined,
+      estado: estado || undefined,
+      servicio: servicio || undefined,
+      sede: sede || undefined,
+      periodo: periodo || undefined,
+      search: search || undefined,
+
+      idSolicitante:
+        esVistaMisSolicitudes || esSoloSolicitante
+          ? req.user.idPersonal
+          : undefined,
+
+      // Para listados generales o bandejas técnicas no deben aparecer
+      // solicitudes que aún no tienen documento firmado.
+      // Esas solicitudes todavía están pendientes de firma/carga.
+      ocultarPendientesFirma:
+        !esVistaMisSolicitudes && !esSoloSolicitante,
+
       limit,
       offset,
     }
@@ -56,15 +82,39 @@ async function obtenerPorId(req, res) {
     const resultado = await queries.obtenerPorId(id)
     if (!resultado) return error(res, 404, 'Solicitud no encontrada')
 
+    const roles = req.user.roles || []
+
+    const esSoloSolicitante =
+      roles.length === 1 && roles[0] === 'usuario_solicitante'
+
+    const esPropietario =
+      Number(resultado.solicitud.id_solicitante) === Number(req.user.idPersonal)
+
+    const estaPendienteFirma = ['borrador', 'enviada'].includes(
+      resultado.solicitud.estado,
+    )
+
+    // Un usuario solicitante solo puede ver sus propias solicitudes.
+    if (!esPropietario && esSoloSolicitante) {
+      return error(res, 403, 'No autorizado para ver esta solicitud')
+    }
+
+    // Usuarios con roles técnicos no deben abrir solicitudes pendientes de firma
+    // si no son los dueños de la solicitud.
+    // La solicitud recién debe ser visible para áreas técnicas cuando pase a en_proceso.
+    if (!esPropietario && estaPendienteFirma) {
+      return error(res, 403, 'No autorizado para ver esta solicitud')
+    }
+
     const solicitud = mapSolicitudRow(resultado.solicitud)
 
     return ok(res, {
       ...solicitud,
-      servicios:          resultado.servicios,
-      etapas:             resultado.etapas,
-      historial:          resultado.historial,
-      solicitudesHijas:   resultado.solicitudesHijas,
-      usuariosMasivos:    resultado.usuariosMasivos,
+      servicios: resultado.servicios,
+      etapas: resultado.etapas,
+      historial: resultado.historial,
+      solicitudesHijas: resultado.solicitudesHijas,
+      usuariosMasivos: resultado.usuariosMasivos,
     })
   } catch (err) {
     console.error('solicitudes.obtenerPorId:', err)
@@ -117,7 +167,6 @@ async function crear(req, res) {
       })
     }
 
-    // Validaciones básicas para individual o servicios derivados de masiva.
     if (
       !serviciosNormalizados ||
       !Array.isArray(serviciosNormalizados) ||
@@ -139,7 +188,6 @@ async function crear(req, res) {
       usuariosMasivos,
     })
 
-    // Auditoria
     await registrarAuditoria(
       req.user.id,
       'CREAR_SOLICITUD',
@@ -209,19 +257,24 @@ async function enviar(req, res) {
     const solicitudActualizada = await queries.enviar(id, req.user.id)
     const mapped = mapSolicitudRow(solicitudActualizada)
 
-    // Auditoria
     await registrarAuditoria(
-      req.user.id, 'ENVIAR_SOLICITUD', 'solicitudes',
-      String(id), { estado: 'borrador' }, { estado: 'enviada' },
-      req.ip
+      req.user.id,
+      'ENVIAR_SOLICITUD',
+      'solicitudes',
+      String(id),
+      { estado: 'borrador' },
+      { estado: 'enviada' },
+      req.ip,
     )
 
     return ok(res, mapped)
   } catch (err) {
     console.error('solicitudes.enviar:', err)
+
     const status = err.message.includes('no encontrada') ? 404
       : err.message.includes('No se puede') ? 400
       : 500
+
     return error(res, status, err.message)
   }
 }
@@ -236,19 +289,24 @@ async function cancelar(req, res) {
 
     const result = await queries.cancelar(id, req.user.id, motivo)
 
-    // Auditoria
     await registrarAuditoria(
-      req.user.id, 'CANCELAR_SOLICITUD', 'solicitudes',
-      String(id), null, { estado: 'cancelada', motivo },
-      req.ip
+      req.user.id,
+      'CANCELAR_SOLICITUD',
+      'solicitudes',
+      String(id),
+      null,
+      { estado: 'cancelada', motivo },
+      req.ip,
     )
 
     return ok(res, result)
   } catch (err) {
     console.error('solicitudes.cancelar:', err)
+
     const status = err.message.includes('no encontrada') ? 404
       : err.message.includes('No se puede') ? 400
       : 500
+
     return error(res, status, err.message)
   }
 }
@@ -262,19 +320,32 @@ async function confirmarFirmado(req, res) {
     const result = await queries.confirmarFirmado(id, req.user.id)
 
     await registrarAuditoria(
-      req.user.id, 'CONFIRMAR_FIRMADO', 'solicitudes',
-      String(id), null, { estado: result.estado },
-      req.ip
+      req.user.id,
+      'CONFIRMAR_FIRMADO',
+      'solicitudes',
+      String(id),
+      null,
+      { estado: result.estado },
+      req.ip,
     )
 
     return ok(res, result)
   } catch (err) {
     console.error('solicitudes.confirmarFirmado:', err)
+
     const status = err.message.includes('no encontrada') ? 404
       : err.message.includes('No se ha subido') ? 400
       : 500
+
     return error(res, status, err.message)
   }
 }
 
-module.exports = { listar, obtenerPorId, crear, enviar, cancelar, confirmarFirmado }
+module.exports = {
+  listar,
+  obtenerPorId,
+  crear,
+  enviar,
+  cancelar,
+  confirmarFirmado,
+}

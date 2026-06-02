@@ -8,7 +8,8 @@ const { query, getClient } = require('../../config/db')
 async function listar(filters = {}) {
   const {
     estado, servicio, sede, periodo, search,
-    idSolicitante, limit = 20, offset = 0,
+    idSolicitante, ocultarPendientesFirma = false,
+    limit = 20, offset = 0,
   } = filters
 
   const conditions = []
@@ -65,6 +66,10 @@ async function listar(filters = {}) {
     conditions.push(`s.id_solicitante = $${idx++}`)
     params.push(idSolicitante)
   }
+
+  if (ocultarPendientesFirma) {
+  conditions.push(`s.estado NOT IN ('borrador', 'enviada')`)
+}
 
   const where = conditions.length > 0
     ? 'WHERE ' + conditions.join(' AND ')
