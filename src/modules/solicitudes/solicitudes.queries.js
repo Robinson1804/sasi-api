@@ -480,6 +480,11 @@ function validarFechasPermiso(servicios, fechaFinContrato, tipoSolicitud = 'indi
   }
 }
 
+function puedeSolicitarCuentaGenerica(tipoVinculo) {
+  const vinculo = normalizarTexto(tipoVinculo)
+  return vinculo === 'CAS' || vinculo === 'NOMBRADO'
+}
+
 function validarReglasC1(servicios, personal, tipoSolicitud = 'individual') {
   const servicioC1 = servicios.find((srv) => srv.codigoServicio === 'c1')
   if (!servicioC1) return
@@ -487,7 +492,7 @@ function validarReglasC1(servicios, personal, tipoSolicitud = 'individual') {
   const datos = servicioC1.datos || {}
   const tipoOperacion = datos.tipoOperacion || 'creacion'
   const usuarioTieneCorreo = Boolean(String(personal.correo || '').trim())
-  const esCAS = normalizarTexto(personal.tipo_vinculo) === 'CAS'
+  const puedeCuentaGenerica = puedeSolicitarCuentaGenerica(personal.tipo_vinculo)
 
   const redSolicitar = datos.redSolicitar === true
   const internetSolicitar = datos.internetSolicitar === true
@@ -530,9 +535,9 @@ function validarReglasC1(servicios, personal, tipoSolicitud = 'individual') {
     }
   }
 
-  if (redSolicitar && datos.redTipoCuenta === 'generica' && !esCAS) {
-    throw new Error('C1: La cuenta genérica solo está habilitada para usuarios con vínculo CAS')
-  }
+  if (redSolicitar && datos.redTipoCuenta === 'generica' && !puedeCuentaGenerica) {
+  throw new Error('C1: La cuenta genérica solo está habilitada para usuarios con vínculo CAS o Nombrado')
+}
 
   if (
     redSolicitar &&
@@ -648,11 +653,11 @@ async function validarUsuariosMasivosPorServicio(client, usuariosMasivos = []) {
         )
       }
 
-      const esCAS = normalizarTexto(personal.tipo_vinculo) === 'CAS'
+      const puedeCuentaGenerica = puedeSolicitarCuentaGenerica(personal.tipo_vinculo)
 
-      if (usuario.redTipoCuenta === 'generica' && !esCAS) {
+      if (usuario.redTipoCuenta === 'generica' && !puedeCuentaGenerica) {
         throw new Error(
-          `C1: ${nombre} no puede solicitar cuenta genérica porque su vínculo no es CAS`
+          `C1: ${nombre} no puede solicitar cuenta genérica porque su vínculo no es CAS ni Nombrado`
         )
       }
 
