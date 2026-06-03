@@ -868,12 +868,28 @@ async function crear(data) {
               serviciosSeleccionados: serviciosUsuario,
               c1: serviciosUsuario.includes('c1')
                 ? {
+                    tipoOperacion: String(um.correoSolicitar || um.correoTipo === 'aumento' || um.redTipoCuenta === 'generica'
+                      ? 'actualizacion'
+                      : 'creacion'),
+
                     internetPerfil: usuarioValue(um.internetPerfil, '3'),
                     internetJustificacion: usuarioValue(um.internetJustificacion, ''),
                     internetRedesSociales: usuarioValue(um.internetRedesSociales, 'sin'),
+
                     redTipoCuenta: usuarioValue(um.redTipoCuenta, 'personal'),
                     redNombreGenerico: usuarioValue(um.redNombreGenerico, ''),
+
                     correoInstitucional: Boolean(um.correoInstitucional),
+                    correoSolicitar: Boolean(um.correoSolicitar),
+                    correoTipo: usuarioValue(um.correoTipo, ''),
+                    correoCapacidad: usuarioValue(um.correoCapacidad, ''),
+
+                    correoActual: usuarioValue(
+                      um.correoInstitucionalActual ||
+                        um.correo_institucional_actual ||
+                        '',
+                      ''
+                    ),
                   }
                 : null,
               c4: serviciosUsuario.includes('c4')
