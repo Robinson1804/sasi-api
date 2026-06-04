@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // externos.service.js — Servicio que simula una API externa
 // Lee datos de personal desde JSON (convertido del Excel LISTA_API_RB.xlsx)
-// En producción sería reemplazado por llamadas HTTP a un servicio real.
+// En producción será reemplazado por llamadas HTTP a un servicio real de RR. HH.
 // ---------------------------------------------------------------------------
 const path = require('path')
 const fs = require('fs')
@@ -11,24 +11,99 @@ const JSON_PATH = path.resolve(__dirname, '../../../data/personal-rrhh.json')
 
 let _cache = null
 
+function toIsoDate(value) {
+  if (!value) return null
+
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null
+    return value.toISOString().split('T')[0]
+  }
+
+  if (typeof value === 'number') {
+    // Excel serial date. Excel usa 1899-12-30 como base práctica.
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+    const date = new Date(excelEpoch.getTime() + Math.floor(value) * 86400000)
+
+    if (Number.isNaN(date.getTime())) return null
+
+    return date.toISOString().split('T')[0]
+  }
+
+  const str = String(value).trim()
+  if (!str) return null
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str
+  }
+
+  if (str.includes('T')) {
+    const onlyDate = str.split('T')[0]
+    return /^\d{4}-\d{2}-\d{2}$/.test(onlyDate) ? onlyDate : null
+  }
+
+  const parsed = new Date(str)
+  if (Number.isNaN(parsed.getTime())) return null
+
+  return parsed.toISOString().split('T')[0]
+}
+
+function addDaysIso(dateValue, days) {
+  const iso = toIsoDate(dateValue)
+  const numericDays = Number(days)
+
+  if (!iso || !Number.isFinite(numericDays)) return null
+
+  const date = new Date(`${iso}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + numericDays)
+
+  return date.toISOString().split('T')[0]
+}
+
+function normalizarEstado(value) {
+  const estado = String(value || '').trim().toUpperCase()
+
+  if (estado === 'ACTIVO' || estado === 'VIGENTE') return 'ACTIVO'
+  if (estado === 'INACTIVO' || estado === 'VENCIDO') return 'INACTIVO'
+  if (estado === 'SUSPENDIDO') return 'SUSPENDIDO'
+
+  return 'ACTIVO'
+}
+
 function cargarDatos() {
   if (_cache) return _cache
 
   const raw = JSON.parse(fs.readFileSync(JSON_PATH, 'utf8'))
 
-  _cache = raw.map((r) => ({
-    dni:          String(r.DNI || '').padStart(8, '0'),
-    apePaterno:   (r.APE_PATERNO || '').trim(),
-    apeMaterno:   (r.APE_MATERNO || '').trim(),
-    nombres:      (r.NOMBRE || '').trim(),
-    apellidos:    `${(r.APE_PATERNO || '').trim()} ${(r.APE_MATERNO || '').trim()}`.trim(),
-    tipoVinculo:  (r.TipoVinculo || '').trim(),
-    cargo:        (r.CARGO || '').trim(),
-    correo:       (r.CORREO || '').trim(),
-    celular:      String(r.CELULAR || '').trim(),
-    unidad:       (r.UNIDAD || '').trim(),
-    sede:         (r.SEDE || '').trim(),
-  }))
+  _cache = raw.map((r) => {
+    const fechaInicioContrato =
+      toIsoDate(r.FECHA_INICIO_CONTRATO) ||
+      toIsoDate(r.FECHA_NOTIFICACION)
+
+    const fechaFinContrato =
+      toIsoDate(r.FECHA_FIN_CONTRATO) ||
+      addDaysIso(fechaInicioContrato, r.NPERIODO_TDR)
+
+    return {
+      dni: String(r.DNI || '').padStart(8, '0'),
+      apePaterno: (r.APE_PATERNO || '').trim(),
+      apeMaterno: (r.APE_MATERNO || '').trim(),
+      nombres: (r.NOMBRE || '').trim(),
+      apellidos: `${(r.APE_PATERNO || '').trim()} ${(r.APE_MATERNO || '').trim()}`.trim(),
+      tipoVinculo: (r.TipoVinculo || '').trim(),
+      cargo: (r.CARGO || '').trim(),
+      correo: (r.CORREO || '').trim(),
+      celular: String(r.CELULAR || '').trim(),
+      unidad: (r.UNIDAD || '').trim(),
+      sede: (r.SEDE || '').trim(),
+
+      orden: r.ORDEN ? String(r.ORDEN).trim() : '',
+      fechaInicioContrato,
+      fechaFinContrato,
+      estado: normalizarEstado(r.ESTADO),
+      fechaNotificacion: toIsoDate(r.FECHA_NOTIFICACION),
+      periodoTdr: r.NPERIODO_TDR ? Number(r.NPERIODO_TDR) : null,
+    }
+  })
 
   console.log(`[externos] ${_cache.length} registros cargados desde JSON`)
   return _cache
@@ -43,11 +118,15 @@ function buscarPorDni(dni) {
 function buscarPorNombre(texto) {
   const datos = cargarDatos()
   const q = (texto || '').toLowerCase().trim()
+
   if (!q) return []
-  return datos.filter((d) => {
-    const full = `${d.nombres} ${d.apellidos} ${d.dni}`.toLowerCase()
-    return full.includes(q)
-  }).slice(0, 20)
+
+  return datos
+    .filter((d) => {
+      const full = `${d.nombres} ${d.apellidos} ${d.dni}`.toLowerCase()
+      return full.includes(q)
+    })
+    .slice(0, 20)
 }
 
 function listar({ limit = 20, offset = 0, search } = {}) {
@@ -56,6 +135,7 @@ function listar({ limit = 20, offset = 0, search } = {}) {
 
   if (search) {
     const q = search.toLowerCase().trim()
+
     filtrados = datos.filter((d) => {
       const full = `${d.nombres} ${d.apellidos} ${d.dni} ${d.unidad} ${d.sede}`.toLowerCase()
       return full.includes(q)
@@ -232,8 +312,8 @@ async function validarParaSolicitud(dni) {
       telefono: externo?.celular || '',
       oficina: externo?.unidad || '',
       sede: externo?.sede || '',
-      fechaInicioContrato: null,
-      fechaFinContrato: null,
+      fechaInicioContrato: externo?.fechaInicioContrato || null,
+      fechaFinContrato: externo?.fechaFinContrato || null,
       contratoEstado: 'sin_registro',
       puedeSolicitar: false,
       restricciones: [
