@@ -3,7 +3,7 @@ const { query } = require('../../config/db');
 const SQL_FIND_USUARIO_BY_DNI = `
   SELECT u.id, u.password_hash, u.activo,
          p.id AS id_personal, p.dni, p.apellidos, p.nombres,
-         p.tipo_vinculo, p.cargo, p.correo, p.telefono, p.oficina,
+         p.tipo_vinculo, p.cargo, p.correo, p.correo_personal, p.telefono, p.oficina,
          s.nombre AS sede,
          p.num_orden_servicio, p.fecha_inicio_contrato,
          p.fecha_fin_contrato, p.estado

@@ -79,6 +79,7 @@ async function login(req, res) {
       tipoVinculo: user.tipo_vinculo,
       cargo: user.cargo,
       correo: user.correo,
+      correoPersonal: user.correo_personal,
       telefono: user.telefono,
       oficina: user.oficina,
       sede: user.sede,

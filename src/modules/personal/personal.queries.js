@@ -407,7 +407,11 @@ async function sincronizar(listaExternos) {
                   correo = COALESCE(NULLIF($5, ''), correo),
 
                   -- CORREO del JSON RRHH va aquí.
-                  correo_personal = COALESCE(NULLIF($6, ''), correo_personal),
+                  correo_personal = CASE
+                    WHEN correo_personal IS NULL OR TRIM(correo_personal) = ''
+                    THEN COALESCE(NULLIF($6, ''), correo_personal)
+                    ELSE correo_personal
+                  END,
 
                   telefono = COALESCE($7, telefono),
                   oficina = COALESCE($8, oficina),

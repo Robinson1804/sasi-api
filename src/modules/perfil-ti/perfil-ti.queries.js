@@ -73,7 +73,6 @@ async function obtenerServiciosAsignados(idPersonal) {
   return rows
 }
 
-// Estadísticas de solicitudes del usuario
 const SQL_ESTADISTICAS = `
   SELECT
     COUNT(*) AS total,
@@ -103,8 +102,22 @@ async function actualizarTelefono(idPersonal, telefono) {
   return rows[0]
 }
 
+async function actualizarCorreoPersonal(idPersonal, correoPersonal) {
+  const { rows } = await query(
+    `UPDATE personal
+        SET correo_personal = $2,
+            updated_at = NOW()
+      WHERE id = $1
+      RETURNING correo_personal`,
+    [idPersonal, correoPersonal],
+  )
+
+  return rows[0]
+}
+
 module.exports = {
   obtenerServiciosAsignados,
   obtenerEstadisticas,
   actualizarTelefono,
+  actualizarCorreoPersonal,
 }

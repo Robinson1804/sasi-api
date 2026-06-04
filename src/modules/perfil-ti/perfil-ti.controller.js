@@ -3,6 +3,7 @@ const {
   obtenerServiciosAsignados,
   obtenerEstadisticas,
   actualizarTelefono,
+  actualizarCorreoPersonal,
 } = require('./perfil-ti.queries')
 
 async function obtenerPerfilTi(req, res) {
@@ -63,7 +64,45 @@ async function actualizarTelefonoCtrl(req, res) {
   }
 }
 
+async function actualizarCorreoPersonalCtrl(req, res) {
+  try {
+    const idPersonal = req.user.idPersonal
+    if (!idPersonal) return error(res, 400, 'Usuario sin personal asociado')
+
+    const correoPersonal = String(req.body.correoPersonal || '').trim()
+
+    if (!correoPersonal) {
+      return error(res, 400, 'El correo personal es obligatorio')
+    }
+
+    if (correoPersonal.length > 150) {
+      return error(res, 400, 'El correo personal no puede superar los 150 caracteres')
+    }
+
+    const emailValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correoPersonal)
+
+    if (!emailValido) {
+      return error(res, 400, 'Ingrese un correo personal válido')
+    }
+
+    const actualizado = await actualizarCorreoPersonal(idPersonal, correoPersonal)
+
+    if (!actualizado) {
+      return error(res, 404, 'Personal no encontrado')
+    }
+
+    return ok(res, {
+      correoPersonal: actualizado.correo_personal,
+      message: 'Correo personal actualizado correctamente',
+    })
+  } catch (err) {
+    console.error('perfil-ti.actualizarCorreoPersonal:', err)
+    return error(res, 500, 'Error al actualizar correo personal')
+  }
+}
+
 module.exports = {
   obtenerPerfilTi,
   actualizarTelefono: actualizarTelefonoCtrl,
+  actualizarCorreoPersonal: actualizarCorreoPersonalCtrl,
 }

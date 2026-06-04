@@ -6,5 +6,6 @@ router.use(verifyToken)
 
 router.get('/', ctrl.obtenerPerfilTi)
 router.patch('/telefono', ctrl.actualizarTelefono)
+router.patch('/correo-personal', ctrl.actualizarCorreoPersonal)
 
 module.exports = router
