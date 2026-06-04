@@ -56,6 +56,7 @@ async function crear(req, res) {
       tipoVinculo,
       cargo,
       correo,
+      correoPersonal,
       telefono,
       oficina,
       sede,
@@ -74,6 +75,7 @@ async function crear(req, res) {
       tipoVinculo,
       cargo,
       correo,
+      correoPersonal,
       telefono,
       oficina,
       sede,
@@ -154,7 +156,11 @@ async function sincronizar(req, res) {
       nombres: ext.nombres,
       tipoVinculo: normalizarVinculo(ext.tipoVinculo),
       cargo: ext.cargo,
-      correo: ext.correo,
+
+      // RRHH envía correo personal. No debe usarse como institucional.
+      correoPersonal: ext.correoPersonal || '',
+      correoInstitucional: ext.correoInstitucional || '',
+
       celular: ext.celular,
       unidad: ext.unidad,
       sede: ext.sede,

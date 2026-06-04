@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // externos.service.js — Servicio que simula una API externa
-// Lee datos de personal desde JSON (convertido del Excel LISTA_API_RB.xlsx)
+// Lee datos de personal desde JSON.
 // En producción será reemplazado por llamadas HTTP a un servicio real de RR. HH.
 // ---------------------------------------------------------------------------
 const path = require('path')
@@ -20,7 +20,6 @@ function toIsoDate(value) {
   }
 
   if (typeof value === 'number') {
-    // Excel serial date. Excel usa 1899-12-30 como base práctica.
     const excelEpoch = new Date(Date.UTC(1899, 11, 30))
     const date = new Date(excelEpoch.getTime() + Math.floor(value) * 86400000)
 
@@ -91,7 +90,13 @@ function cargarDatos() {
       apellidos: `${(r.APE_PATERNO || '').trim()} ${(r.APE_MATERNO || '').trim()}`.trim(),
       tipoVinculo: (r.TipoVinculo || '').trim(),
       cargo: (r.CARGO || '').trim(),
-      correo: (r.CORREO || '').trim(),
+
+      // CORREO del JSON RRHH es correo personal, no institucional.
+      correoPersonal: (r.CORREO || r.CORREO_PERSONAL || '').trim(),
+
+      // Reservado por si en el futuro RRHH envía correo institucional explícito.
+      correoInstitucional: (r.CORREO_INSTITUCIONAL || '').trim(),
+
       celular: String(r.CELULAR || '').trim(),
       unidad: (r.UNIDAD || '').trim(),
       sede: (r.SEDE || '').trim(),
@@ -286,6 +291,7 @@ async function validarParaSolicitud(dni) {
             p.tipo_vinculo,
             p.cargo,
             p.correo,
+            p.correo_personal,
             p.telefono,
             p.oficina,
             p.fecha_inicio_contrato,
@@ -308,7 +314,8 @@ async function validarParaSolicitud(dni) {
       apellidos: externo?.apellidos || '',
       cargo: externo?.cargo || '',
       tipoVinculo: externo?.tipoVinculo || '',
-      correo: externo?.correo || '',
+      correo: '',
+      correoPersonal: externo?.correoPersonal || '',
       telefono: externo?.celular || '',
       oficina: externo?.unidad || '',
       sede: externo?.sede || '',
@@ -324,18 +331,17 @@ async function validarParaSolicitud(dni) {
 
   const row = rows[0]
   const contrato = evaluarContrato(row.fecha_fin_contrato)
-
   const serviciosActuales = await obtenerServiciosAsignadosPorDni(row.dni)
 
   const restricciones = [...contrato.restricciones]
 
-  if (row.estado && String(row.estado).toLowerCase() !== 'activo') {
+  if (row.estado && String(row.estado).toUpperCase() !== 'ACTIVO') {
     restricciones.push(`El usuario se encuentra en estado ${row.estado}`)
   }
 
   const puedeSolicitar =
     contrato.puedeSolicitar &&
-    (!row.estado || String(row.estado).toLowerCase() === 'activo')
+    (!row.estado || String(row.estado).toUpperCase() === 'ACTIVO')
 
   return {
     idPersonal: row.id,
@@ -345,6 +351,7 @@ async function validarParaSolicitud(dni) {
     cargo: row.cargo,
     tipoVinculo: row.tipo_vinculo,
     correo: row.correo || '',
+    correoPersonal: row.correo_personal || '',
     telefono: row.telefono || '',
     oficina: row.oficina || '',
     sede: row.sede || '',

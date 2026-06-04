@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs')
 
 const SQL_BASE = `
   SELECT p.id, p.dni, p.apellidos, p.nombres, p.tipo_vinculo, p.cargo,
-         p.correo, p.telefono, p.oficina, s.nombre AS sede,
+         p.correo, p.correo_personal, p.telefono, p.oficina, s.nombre AS sede,
          p.fecha_inicio_contrato, p.fecha_fin_contrato, p.estado,
          p.num_orden_servicio,
          u.activo,
@@ -33,6 +33,7 @@ function mapRow(row) {
     tipoVinculo: row.tipo_vinculo,
     cargo: row.cargo,
     correo: row.correo,
+    correoPersonal: row.correo_personal,
     telefono: row.telefono,
     oficina: row.oficina,
     sede: row.sede,
@@ -57,10 +58,6 @@ function normalizarEstado(value) {
 
 function estadoToActivo(estado) {
   return normalizarEstado(estado) === 'ACTIVO'
-}
-
-function estadoToActivo(estado) {
-  return normalizarEstado(estado) === 'activo'
 }
 
 async function asegurarRolSolicitante(client, usuarioId, rolSolicitanteId) {
@@ -153,6 +150,7 @@ async function crear(data) {
     tipoVinculo,
     cargo,
     correo,
+    correoPersonal,
     telefono,
     oficina,
     sede,
@@ -174,8 +172,9 @@ async function crear(data) {
 
     const { rows: pRows } = await client.query(
       `INSERT INTO personal
-         (dni, apellidos, nombres, tipo_vinculo, cargo, correo, telefono, oficina, id_sede, estado)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         (dni, apellidos, nombres, tipo_vinculo, cargo, correo, correo_personal,
+          telefono, oficina, id_sede, estado)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING id`,
       [
         dni,
@@ -183,11 +182,12 @@ async function crear(data) {
         nombres,
         tipoVinculo,
         cargo,
-        correo,
+        correo || null,
+        correoPersonal || null,
         telefono,
         oficina,
         idSede,
-        activo ? 'ACTIVO' : 'INACTIVO'
+        activo ? 'ACTIVO' : 'INACTIVO',
       ],
     )
 
@@ -370,7 +370,8 @@ async function sincronizar(listaExternos) {
         nombres,
         tipoVinculo,
         cargo,
-        correo,
+        correoPersonal,
+        correoInstitucional,
         celular,
         unidad,
         sede,
@@ -401,21 +402,28 @@ async function sincronizar(listaExternos) {
                   nombres = COALESCE($2, nombres),
                   tipo_vinculo = COALESCE($3, tipo_vinculo),
                   cargo = COALESCE($4, cargo),
-                  correo = COALESCE($5, correo),
-                  telefono = COALESCE($6, telefono),
-                  oficina = COALESCE($7, oficina),
-                  id_sede = COALESCE($8, id_sede),
-                  fecha_inicio_contrato = COALESCE($9, fecha_inicio_contrato),
-                  fecha_fin_contrato = COALESCE($10, fecha_fin_contrato),
-                  num_orden_servicio = COALESCE($11, num_orden_servicio),
-                  estado = COALESCE($12, estado)
-            WHERE id = $13`,
+
+                  -- correo institucional solo se actualiza si RRHH lo envía explícitamente.
+                  correo = COALESCE(NULLIF($5, ''), correo),
+
+                  -- CORREO del JSON RRHH va aquí.
+                  correo_personal = COALESCE(NULLIF($6, ''), correo_personal),
+
+                  telefono = COALESCE($7, telefono),
+                  oficina = COALESCE($8, oficina),
+                  id_sede = COALESCE($9, id_sede),
+                  fecha_inicio_contrato = COALESCE($10, fecha_inicio_contrato),
+                  fecha_fin_contrato = COALESCE($11, fecha_fin_contrato),
+                  num_orden_servicio = COALESCE($12, num_orden_servicio),
+                  estado = COALESCE($13, estado)
+            WHERE id = $14`,
           [
             apellidos || null,
             nombres || null,
             tipoVinculo || null,
             cargo || null,
-            correo || null,
+            correoInstitucional || '',
+            correoPersonal || '',
             celular || null,
             unidad || null,
             idSede,
@@ -465,10 +473,10 @@ async function sincronizar(listaExternos) {
       } else {
         const { rows: pRows } = await client.query(
           `INSERT INTO personal
-             (dni, apellidos, nombres, tipo_vinculo, cargo, correo, telefono,
-              oficina, id_sede, fecha_inicio_contrato, fecha_fin_contrato,
+             (dni, apellidos, nombres, tipo_vinculo, cargo, correo, correo_personal,
+              telefono, oficina, id_sede, fecha_inicio_contrato, fecha_fin_contrato,
               num_orden_servicio, estado)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
            RETURNING id`,
           [
             dniValue,
@@ -476,7 +484,13 @@ async function sincronizar(listaExternos) {
             nombres,
             tipoVinculo,
             cargo,
-            correo,
+
+            // Institucional solo si viene explícito desde RRHH.
+            correoInstitucional || null,
+
+            // Personal desde CORREO del JSON.
+            correoPersonal || null,
+
             celular,
             unidad,
             idSede,
